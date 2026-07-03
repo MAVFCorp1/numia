@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase'
 import { useRouter } from 'next/navigation'
 import { categoriaInfo } from '@/lib/categorizador'
+import { diaDeclaracion, proximaFechaDeclaracion, formatearFecha, diasRestantes } from '@/lib/sriHelpers'
 
 const RATIOS_RAPIDOS = [
   {
@@ -40,10 +41,20 @@ const SEMAFORO_COLORES = {
   rojo: { dot: 'bg-red-400', text: 'text-red-400', bg: 'bg-red-500/10 border-red-500/30' },
 }
 
+// Muestra el nombre limpio: si es un email, toma la parte antes del @ y capitaliza
+function nombreLimpio(nombre) {
+  if (!nombre) return ''
+  let base = nombre
+  if (nombre.includes('@')) base = nombre.split('@')[0]
+  return base.charAt(0).toUpperCase() + base.slice(1)
+}
+
 export default function Dashboard() {
   const [user, setUser] = useState(null)
   const [perfil, setPerfil] = useState(null)
   const [movimientos, setMovimientos] = useState([])
+  const [facturas, setFacturas] = useState([])
+  const [deducibles, setDeducibles] = useState([])
   const [loading, setLoading] = useState(true)
   const [tema, setTema] = useState('claro')
   const router = useRouter()
@@ -54,13 +65,17 @@ export default function Dashboard() {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) { router.push('/login'); return }
       setUser(user)
-      const [{ data: perfil }, { data: movs }, { data: pref }] = await Promise.all([
+      const [{ data: perfil }, { data: movs }, { data: pref }, { data: facts }, { data: dedus }] = await Promise.all([
         supabase.from('profiles').select('*').eq('user_id', user.id).single(),
         supabase.from('movimientos').select('*').eq('user_id', user.id).order('fecha', { ascending: false }),
         supabase.from('preferencias').select('tema').eq('user_id', user.id).single(),
+        supabase.from('facturas_sri').select('*').eq('user_id', user.id),
+        supabase.from('deducibles').select('*').eq('user_id', user.id),
       ])
       setPerfil(perfil)
       setMovimientos(movs || [])
+      setFacturas(facts || [])
+      setDeducibles(dedus || [])
       if (pref) setTema(pref.tema || 'claro')
       setLoading(false)
     }
@@ -100,6 +115,20 @@ export default function Dashboard() {
   const salud = Math.min(100, Math.max(0, Math.round((utilidad / Math.max(ingresos, 1)) * 100 + 50)))
   const esEmpresa = perfil?.tipo === 'empresa'
 
+  // IVA desde facturas
+  const ivaVentas = facturas.filter(f => f.tipo === 'venta').reduce((s, f) => s + parseFloat(f.iva || 0), 0)
+  const ivaCompras = facturas.filter(f => f.tipo === 'compra').reduce((s, f) => s + parseFloat(f.iva || 0), 0)
+  const ivaSaldo = ivaVentas - ivaCompras
+
+  // Deducibles acumulados
+  const totalDeducibles = deducibles.reduce((s, d) => s + parseFloat(d.monto || 0), 0)
+
+  // Próxima declaración SRI (según RUC del perfil)
+  const ruc = perfil?.ruc
+  const diaDecl = diaDeclaracion(ruc)
+  const proxima = proximaFechaDeclaracion(ruc)
+  const dias = diasRestantes(proxima)
+
   const catGastos = {}
   const catIngresos = {}
   movimientos.forEach(m => {
@@ -119,6 +148,15 @@ export default function Dashboard() {
     else cuentas[m.cuenta].gas += parseFloat(m.monto)
   })
 
+  // Accesos rápidos (según tipo de perfil)
+  const accesos = [
+    { href: '/dashboard/banco', emoji: '🏦', label: 'Banco', desc: 'Movimientos', color: '#E91E8C' },
+    { href: '/dashboard/xmls', emoji: '📄', label: 'XMLs SRI', desc: 'Comprobantes', color: '#9C27B0' },
+    { href: '/dashboard/sri', emoji: '🏛️', label: 'SRI e IVA', desc: 'Impuestos', color: '#3B82F6' },
+    { href: '/dashboard/deducibles', emoji: '🧾', label: 'Deducibles', desc: esEmpresa ? 'Gastos empresa' : 'Ahorro fiscal', color: '#10B981' },
+    ...(esEmpresa ? [{ href: '/dashboard/ratios', emoji: '📊', label: 'Ratios', desc: 'Análisis', color: '#F59E0B' }] : []),
+  ]
+
   return (
     <div className={`min-h-screen ${bg} transition-colors duration-300`}>
 
@@ -131,28 +169,8 @@ export default function Dashboard() {
             <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${esEmpresa ? 'bg-blue-500/20 text-blue-400' : 'bg-purple-500/20 text-purple-400'}`}>
               {esEmpresa ? '🏢 Empresa PYME' : '👤 Persona natural'}
             </span>
-            {perfil?.nombre && <span className={`text-sm font-medium ${text}`}>{perfil.nombre}</span>}
           </div>
           <div className="flex items-center gap-2">
-            <a href="/dashboard/xmls" className="text-xs px-3 py-1.5 rounded-lg font-semibold text-white transition-all hover:opacity-90" style={{ background: 'linear-gradient(135deg,#E91E8C,#9C27B0)' }}>
-              + XML SRI
-            </a>
-            <a href="/dashboard/banco" className={`text-xs px-3 py-1.5 rounded-lg border font-medium transition-colors ${dark ? 'border-gray-700 text-gray-300 hover:bg-gray-800' : 'border-gray-200 text-gray-700 hover:bg-gray-50'}`}>
-              + Extracto banco
-            </a>
-            {esEmpresa && (
-              <a href="/dashboard/ratios" className={`text-xs px-3 py-1.5 rounded-lg border font-medium transition-colors ${dark ? 'border-gray-700 text-gray-300 hover:bg-gray-800' : 'border-gray-200 text-gray-700 hover:bg-gray-50'}`}>
-                📊 Ratios
-              </a>
-            )}
-            {!esEmpresa && (
-              <a href="/dashboard/deducibles" className={`text-xs px-3 py-1.5 rounded-lg border font-medium transition-colors ${dark ? 'border-gray-700 text-gray-300 hover:bg-gray-800' : 'border-gray-200 text-gray-700 hover:bg-gray-50'}`}>
-                📋 Deducibles
-              </a>
-            )}
-            <a href="/dashboard/sri" className={`text-xs px-3 py-1.5 rounded-lg border font-medium transition-colors ${dark ? 'border-gray-700 text-gray-300 hover:bg-gray-800' : 'border-gray-200 text-gray-700 hover:bg-gray-50'}`}>
-              🏛️ SRI
-            </a>
             <button onClick={toggleTema} className={`p-2 rounded-lg border transition-colors ${dark ? 'border-gray-700 text-gray-300 hover:bg-gray-800' : 'border-gray-200 text-gray-600 hover:bg-gray-100'}`}>
               {dark ? '☀️' : '🌙'}
             </button>
@@ -163,23 +181,93 @@ export default function Dashboard() {
         </div>
       </header>
 
-      <div className="max-w-7xl mx-auto px-6 py-8 space-y-8">
+      <div className="max-w-7xl mx-auto px-6 py-8 space-y-6">
 
-        {/* MÉTRICAS PRINCIPALES */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          {[
-            { label: 'Total ingresos', valor: ingresos, color: '#10B981', prefix: '+$' },
-            { label: 'Total gastos', valor: gastos, color: '#EF4444', prefix: '-$' },
-            { label: esEmpresa ? 'Utilidad neta' : 'Ahorro neto', valor: utilidad, color: utilidad >= 0 ? '#10B981' : '#EF4444', prefix: '$' },
-            { label: 'Movimientos', valor: movimientos.length, color: '#E91E8C', prefix: '', noDecimal: true },
-          ].map((m, i) => (
-            <div key={i} className={`rounded-2xl border p-5 ${card}`}>
-              <div className={`text-xs mb-2 font-medium ${textSub}`}>{m.label}</div>
-              <div className="text-2xl font-black" style={{ color: m.color }}>
-                {m.prefix}{m.noDecimal ? m.valor : m.valor.toFixed(2)}
+        {/* SALUDO */}
+        <div>
+          <h1 className={`text-2xl font-black ${text}`}>
+            Hola, {nombreLimpio(perfil?.nombre) || 'bienvenido'} 👋
+          </h1>
+          <p className={`text-sm ${textSub}`}>Este es el resumen de tus finanzas en Numia</p>
+        </div>
+
+        {/* BANNER DECLARACIÓN SRI */}
+        {diaDecl ? (
+          <a href="/dashboard/sri"
+            className="block rounded-2xl p-6 relative overflow-hidden transition-all hover:scale-[1.01] group"
+            style={{ background: 'linear-gradient(135deg, #E91E8C, #9C27B0)' }}>
+            <div className="absolute top-0 right-0 w-64 h-64 rounded-full opacity-20 -mr-20 -mt-20" style={{ background: 'radial-gradient(circle, #fff, transparent)' }} />
+            <div className="relative flex items-center justify-between flex-wrap gap-4">
+              <div>
+                <p className="text-white/80 text-xs font-semibold uppercase tracking-wide mb-1">📅 Próxima declaración de IVA</p>
+                <p className="text-white text-2xl font-black">{formatearFecha(proxima)}</p>
+                <p className="text-white/70 text-sm mt-1">Según el 9no dígito de tu RUC · declaras el día {diaDecl} de cada mes</p>
+              </div>
+              <div className="text-center bg-white/15 rounded-2xl px-6 py-4 backdrop-blur">
+                <p className="text-white text-4xl font-black">{dias}</p>
+                <p className="text-white/80 text-xs font-medium">{dias === 1 ? 'día restante' : 'días restantes'}</p>
               </div>
             </div>
+          </a>
+        ) : (
+          <a href="/dashboard/xmls"
+            className={`block rounded-2xl border-2 border-dashed p-6 transition-all hover:border-pink-500 ${dark ? 'border-gray-700 bg-gray-900' : 'border-gray-300 bg-white'}`}>
+            <div className="flex items-center gap-4">
+              <span className="text-3xl">📅</span>
+              <div>
+                <p className={`font-bold ${text}`}>Configura tu RUC para ver tu calendario tributario</p>
+                <p className={`text-sm ${textSub}`}>Te mostraremos cuándo declarar el IVA. Haz clic para configurarlo.</p>
+              </div>
+            </div>
+          </a>
+        )}
+
+        {/* ACCESOS RÁPIDOS */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+          {accesos.map(a => (
+            <a key={a.href} href={a.href}
+              className={`rounded-2xl border p-4 transition-all hover:scale-[1.03] hover:border-pink-500/50 ${card}`}>
+              <div className="w-11 h-11 rounded-xl flex items-center justify-center text-xl mb-3"
+                style={{ background: `${a.color}22`, border: `1px solid ${a.color}55` }}>
+                {a.emoji}
+              </div>
+              <p className={`font-bold text-sm ${text}`}>{a.label}</p>
+              <p className={`text-xs ${textSub}`}>{a.desc}</p>
+            </a>
           ))}
+        </div>
+
+        {/* MÉTRICAS PRINCIPALES */}
+        <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+          {[
+            { label: 'Ingresos', valor: ingresos, color: '#10B981', prefix: '+$', emoji: '💰' },
+            { label: 'Gastos', valor: gastos, color: '#EF4444', prefix: '-$', emoji: '💸' },
+            { label: esEmpresa ? 'Utilidad' : 'Ahorro', valor: utilidad, color: utilidad >= 0 ? '#10B981' : '#EF4444', prefix: '$', emoji: '📊' },
+            { label: ivaSaldo >= 0 ? 'IVA a pagar' : 'IVA a favor', valor: Math.abs(ivaSaldo), color: ivaSaldo >= 0 ? '#E91E8C' : '#10B981', prefix: '$', emoji: '🏛️', href: '/dashboard/sri' },
+            { label: 'Deducibles', valor: totalDeducibles, color: '#9C27B0', prefix: '$', emoji: '🧾', href: '/dashboard/deducibles' },
+            { label: 'Movimientos', valor: movimientos.length, color: '#3B82F6', prefix: '', noDecimal: true, emoji: '🔢' },
+          ].map((m, i) => {
+            const contenido = (
+              <>
+                <div className="flex items-center justify-between mb-2">
+                  <span className={`text-xs font-medium ${textSub}`}>{m.label}</span>
+                  <span className="text-sm">{m.emoji}</span>
+                </div>
+                <div className="text-xl font-black" style={{ color: m.color }}>
+                  {m.prefix}{m.noDecimal ? m.valor : m.valor.toFixed(2)}
+                </div>
+              </>
+            )
+            return m.href ? (
+              <a key={i} href={m.href} className={`rounded-2xl border p-4 transition-all hover:scale-[1.03] hover:border-pink-500/50 ${card}`}>
+                {contenido}
+              </a>
+            ) : (
+              <div key={i} className={`rounded-2xl border p-4 ${card}`}>
+                {contenido}
+              </div>
+            )
+          })}
         </div>
 
         {/* SALUD FINANCIERA */}
@@ -211,21 +299,19 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* RATIOS RÁPIDOS — solo si hay datos */}
-        {movimientos.length > 0 && (
+        {/* RATIOS RÁPIDOS — solo empresa */}
+        {esEmpresa && movimientos.length > 0 && (
           <div className={`rounded-2xl border p-6 ${card}`}>
             <div className="flex items-center justify-between mb-5">
               <div>
                 <h2 className={`font-bold text-sm ${text}`}>📊 Ratios Financieros</h2>
                 <p className={`text-xs mt-0.5 ${textSub}`}>Semáforo rápido · calculado desde tus movimientos</p>
               </div>
-              {esEmpresa && (
-                <a href="/dashboard/ratios"
-                  className="text-xs px-4 py-2 rounded-lg font-semibold text-white transition-all hover:opacity-90 hover:scale-105"
-                  style={{ background: 'linear-gradient(135deg,#E91E8C,#9C27B0)' }}>
-                  Ver análisis completo →
-                </a>
-              )}
+              <a href="/dashboard/ratios"
+                className="text-xs px-4 py-2 rounded-lg font-semibold text-white transition-all hover:opacity-90 hover:scale-105"
+                style={{ background: 'linear-gradient(135deg,#E91E8C,#9C27B0)' }}>
+                Ver análisis completo →
+              </a>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {RATIOS_RAPIDOS.map(ratio => {
@@ -239,11 +325,7 @@ export default function Dashboard() {
                         <span className="text-lg">{ratio.icono}</span>
                         <span className={`text-xs font-semibold ${text}`}>{ratio.nombre}</span>
                       </div>
-                      {C && (
-                        <div className="flex items-center gap-1">
-                          <div className={`w-2 h-2 rounded-full ${C.dot} animate-pulse`} />
-                        </div>
-                      )}
+                      {C && <div className={`w-2 h-2 rounded-full ${C.dot} animate-pulse`} />}
                     </div>
                     <div className={`text-3xl font-black mb-1 ${C ? C.text : textSub}`}>
                       {valor !== null ? ratio.formato(valor) : '—'}
@@ -253,9 +335,6 @@ export default function Dashboard() {
                 )
               })}
             </div>
-            {!esEmpresa && (
-              <p className={`text-xs mt-3 ${textSub}`}>💡 Los ratios completos están disponibles para perfiles de empresa.</p>
-            )}
           </div>
         )}
 
