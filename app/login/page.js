@@ -14,9 +14,26 @@ export default function Login() {
   async function handleLogin() {
     setLoading(true)
     setError('')
-    const { error } = await supabase.auth.signInWithPassword({ email, password })
-    if (error) { setError('Correo o contraseña incorrectos'); setLoading(false); return }
-    router.push('/dashboard')
+
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password })
+    if (error) {
+      setError('Correo o contraseña incorrectos')
+      setLoading(false)
+      return
+    }
+
+    // Revisar si el usuario ya completó su onboarding (tiene perfil en profiles)
+    const { data: perfil } = await supabase
+      .from('profiles')
+      .select('id')
+      .eq('user_id', data.user.id)
+      .single()
+
+    if (perfil) {
+      router.push('/dashboard')
+    } else {
+      router.push('/onboarding')
+    }
   }
 
   return (

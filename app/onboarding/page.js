@@ -32,24 +32,24 @@ const PLANES = [
     precio: '$0',
     periodo: '/mes',
     desc: 'Para empezar a organizar tus finanzas',
-    features: ['Hasta 50 movimientos/mes', 'Categorización básica', '1 presupuesto activo']
+    features: ['Hasta 50 movimientos/mes', 'Categorización automática', '1 presupuesto activo']
   },
   {
     value: 'pro',
     nombre: 'Pro',
-    precio: '$9',
+    precio: '$13.99',
     periodo: '/mes',
-    desc: 'Para profesionales y emprendedores',
-    features: ['Movimientos ilimitados', 'IA para leer balances', 'Ratios financieros', 'Presupuestos ilimitados'],
+    desc: 'Para quienes quieren control total',
+    features: ['Movimientos ilimitados', 'IA para leer balances y facturas', 'Alertas y sugerencias', 'Activos, pasivos y net worth', 'Deducibles y SRI'],
     destacado: true
   },
   {
-    value: 'empresarial',
-    nombre: 'Empresarial',
-    precio: '$29',
+    value: 'contador',
+    nombre: 'Con Contador',
+    precio: 'Desde $50',
     periodo: '/mes',
-    desc: 'Para empresas con equipos',
-    features: ['Todo lo de Pro', 'Múltiples usuarios', 'Reportes SRI', 'Soporte prioritario']
+    desc: 'Un contador sube tu declaración por ti',
+    features: ['Todo lo de Pro', 'Un contador sube tu declaración', 'Revisión profesional', 'Hasta 50 gastos y 30 ingresos', 'Soporte prioritario']
   }
 ]
 
@@ -196,19 +196,22 @@ export default function Onboarding() {
               <p className="text-gray-400 text-sm mb-6">Esto nos ayuda a personalizar tu experiencia</p>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <button
-                  onClick={() => seleccionarTipo('empresa')}
-                  className="bg-gray-800 border border-gray-700 rounded-xl p-6 text-left transition-all hover:scale-105 hover:border-pink-500"
-                >
+                <div className="bg-gray-800 border border-gray-700 rounded-xl p-6 text-left relative opacity-60 cursor-not-allowed">
+                  <span
+                    className="absolute top-3 right-3 text-[10px] font-bold px-2 py-0.5 rounded-full"
+                    style={{ background: 'rgba(156,39,176,0.2)', color: '#CE93D8', border: '1px solid rgba(156,39,176,0.4)' }}
+                  >
+                    Próximamente
+                  </span>
                   <div
-                    className="w-12 h-12 rounded-xl mb-4 flex items-center justify-center text-2xl"
+                    className="w-12 h-12 rounded-xl mb-4 flex items-center justify-center text-2xl grayscale"
                     style={{ background: 'linear-gradient(135deg, #E91E8C, #9C27B0)' }}
                   >
                     🏢
                   </div>
                   <p className="text-white font-bold mb-1">Empresa</p>
                   <p className="text-gray-400 text-xs">Gestiona las finanzas de tu negocio</p>
-                </button>
+                </div>
 
                 <button
                   onClick={() => seleccionarTipo('persona')}
