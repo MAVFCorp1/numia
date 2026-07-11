@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { categoriaInfo } from '@/lib/categorizador'
 import { diaDeclaracion, proximaFechaDeclaracion, formatearFecha, diasRestantes } from '@/lib/sriHelpers'
 import { generarAlertas, construirPromptSugerencias, TIPOS_ALERTA } from '@/lib/alertas'
+import { calcularPatrimonioNeto } from '@/lib/patrimonioHelpers'
 
 const RATIOS_RAPIDOS = [
   {
@@ -64,6 +65,8 @@ export default function Dashboard() {
   const [movimientos, setMovimientos] = useState([])
   const [facturas, setFacturas] = useState([])
   const [deducibles, setDeducibles] = useState([])
+  const [activos, setActivos] = useState([])
+  const [pasivos, setPasivos] = useState([])
   const [loading, setLoading] = useState(true)
   const [tema, setTema] = useState('claro')
   const [entrada, setEntrada] = useState(false)
@@ -79,17 +82,21 @@ export default function Dashboard() {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) { router.push('/login'); return }
       setUser(user)
-      const [{ data: perfil }, { data: movs }, { data: pref }, { data: facts }, { data: dedus }] = await Promise.all([
+      const [{ data: perfil }, { data: movs }, { data: pref }, { data: facts }, { data: dedus }, { data: acts }, { data: pass }] = await Promise.all([
         supabase.from('profiles').select('*').eq('user_id', user.id).single(),
         supabase.from('movimientos').select('*').eq('user_id', user.id).order('fecha', { ascending: false }),
         supabase.from('preferencias').select('tema').eq('user_id', user.id).single(),
         supabase.from('facturas_sri').select('*').eq('user_id', user.id),
         supabase.from('deducibles').select('*').eq('user_id', user.id),
+        supabase.from('activos').select('*').eq('user_id', user.id),
+        supabase.from('pasivos').select('*').eq('user_id', user.id),
       ])
       setPerfil(perfil)
       setMovimientos(movs || [])
       setFacturas(facts || [])
       setDeducibles(dedus || [])
+      setActivos(acts || [])
+      setPasivos(pass || [])
       if (pref) setTema(pref.tema || 'claro')
       setLoading(false)
       setTimeout(() => setEntrada(true), 60)
@@ -181,6 +188,8 @@ export default function Dashboard() {
   const ivaCompras = facturas.filter(f => f.tipo === 'compra').reduce((s, f) => s + parseFloat(f.iva || 0), 0)
   const ivaSaldo = ivaVentas - ivaCompras
   const totalDeducibles = deducibles.reduce((s, d) => s + parseFloat(d.monto || 0), 0)
+  const { totalActivos, totalPasivos, patrimonioNeto } = calcularPatrimonioNeto(activos, pasivos)
+  const sinPatrimonio = activos.length === 0 && pasivos.length === 0
 
   const ruc = perfil?.ruc
   const diaDecl = diaDeclaracion(ruc)
@@ -214,6 +223,7 @@ export default function Dashboard() {
     { href: '/dashboard/xmls', emoji: '📄', label: 'XMLs SRI', desc: 'Comprobantes', color: '#9C27B0' },
     { href: '/dashboard/sri', emoji: '🏛️', label: 'SRI e IVA', desc: 'Impuestos', color: '#3B82F6' },
     { href: '/dashboard/deducibles', emoji: '🧾', label: 'Deducibles', desc: esEmpresa ? 'Gastos empresa' : 'Ahorro fiscal', color: '#10B981' },
+    { href: '/dashboard/patrimonio', emoji: '💎', label: 'Patrimonio', desc: 'Activos y pasivos', color: '#9C27B0' },
     ...(esEmpresa ? [{ href: '/dashboard/ratios', emoji: '📊', label: 'Ratios', desc: 'Análisis', color: '#F59E0B' }] : []),
   ]
 
@@ -338,8 +348,50 @@ export default function Dashboard() {
           <p className={`text-sm mt-1 ${textSub}`}>Así van tus finanzas hoy</p>
         </div>
 
-        {/* BANNER DECLARACIÓN SRI */}
+        {/* PATRIMONIO NETO */}
         <div style={fadeIn(1)}>
+          {sinPatrimonio ? (
+            <a href="/dashboard/patrimonio"
+              className={`block rounded-3xl border-2 border-dashed p-6 transition-all hover:border-pink-500 hover:scale-[1.01] ${dark ? 'border-gray-700 bg-gray-900/70' : 'border-gray-300 bg-white'}`}>
+              <div className="flex items-center gap-5">
+                <div className="w-12 h-12 rounded-2xl flex items-center justify-center text-xl"
+                  style={{ background: 'linear-gradient(135deg, rgba(233,30,140,0.15), rgba(156,39,176,0.15))' }}>
+                  💎
+                </div>
+                <div>
+                  <p className={`font-bold ${text}`}>Registra tus activos y pasivos</p>
+                  <p className={`text-sm ${textSub}`}>Descubre tu patrimonio neto y cómo evoluciona en el tiempo →</p>
+                </div>
+              </div>
+            </a>
+          ) : (
+            <a href="/dashboard/patrimonio"
+              className={`block rounded-3xl border p-6 transition-all hover:scale-[1.01] ${card}`}>
+              <div className="flex items-center justify-between flex-wrap gap-4">
+                <div>
+                  <p className={`text-xs font-semibold mb-1 ${textSub}`}>💎 Patrimonio Neto</p>
+                  <p className="text-3xl font-black" style={{ color: patrimonioNeto >= 0 ? '#10B981' : '#EF4444' }}>
+                    {patrimonioNeto < 0 ? '-' : ''}${Math.abs(patrimonioNeto).toFixed(2)}
+                  </p>
+                </div>
+                <div className="flex gap-6">
+                  <div>
+                    <p className={`text-xs ${textSub}`}>Activos</p>
+                    <p className="text-sm font-bold text-emerald-400">${totalActivos.toFixed(2)}</p>
+                  </div>
+                  <div>
+                    <p className={`text-xs ${textSub}`}>Pasivos</p>
+                    <p className="text-sm font-bold text-red-400">${totalPasivos.toFixed(2)}</p>
+                  </div>
+                </div>
+                <p className={`text-xs font-semibold`} style={{ color: '#E91E8C' }}>Ver detalle →</p>
+              </div>
+            </a>
+          )}
+        </div>
+
+        {/* BANNER DECLARACIÓN SRI */}
+        <div style={fadeIn(2)}>
           {diaDecl ? (
             <a href="/dashboard/sri"
               className="block rounded-3xl p-7 relative overflow-hidden transition-all hover:scale-[1.01] group"
@@ -381,7 +433,7 @@ export default function Dashboard() {
 
         {/* ALERTAS PARA TI */}
         {(alertas.length > 0 || cargandoIA || sugerenciasIA.length > 0) && (
-          <div style={fadeIn(2)}>
+          <div style={fadeIn(3)}>
             <div className="flex items-center justify-between mb-3">
               <h2 className={`font-bold text-sm ${text}`}>🔔 Alertas para ti</h2>
               {alertas.length > 3 && (
@@ -453,7 +505,7 @@ export default function Dashboard() {
         )}
 
         {/* ACCESOS RÁPIDOS */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3" style={fadeIn(3)}>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3" style={fadeIn(4)}>
           {accesos.map(a => (
             <a key={a.href} href={a.href}
               className={`rounded-2xl border p-4 transition-all hover:scale-[1.04] group ${card}`}
@@ -471,7 +523,7 @@ export default function Dashboard() {
         </div>
 
         {/* MÉTRICAS PRINCIPALES */}
-        <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4" style={fadeIn(4)}>
+        <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4" style={fadeIn(5)}>
           {[
             { label: 'Ingresos', valor: ingresos, color: '#10B981', prefix: '+$', emoji: '💰' },
             { label: 'Gastos', valor: gastos, color: '#EF4444', prefix: '-$', emoji: '💸' },
@@ -506,7 +558,7 @@ export default function Dashboard() {
         </div>
 
         {/* SALUD FINANCIERA */}
-        <div className={`rounded-3xl border p-7 ${card}`} style={fadeIn(4)}>
+        <div className={`rounded-3xl border p-7 ${card}`} style={fadeIn(5)}>
           <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-xl flex items-center justify-center text-lg"
@@ -546,7 +598,7 @@ export default function Dashboard() {
 
         {/* RATIOS RÁPIDOS — solo empresa */}
         {esEmpresa && movimientos.length > 0 && (
-          <div className={`rounded-3xl border p-7 ${card}`} style={fadeIn(5)}>
+          <div className={`rounded-3xl border p-7 ${card}`} style={fadeIn(6)}>
             <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
               <div>
                 <h2 className={`font-bold ${text}`}>📊 Ratios Financieros</h2>
@@ -584,7 +636,7 @@ export default function Dashboard() {
         )}
 
         {/* GRÁFICOS DE TRANSACCIONES */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6" style={fadeIn(6)}>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6" style={fadeIn(7)}>
 
           {/* Gastos por categoría */}
           <div className={`rounded-3xl border p-7 ${card}`}>
@@ -676,7 +728,7 @@ export default function Dashboard() {
         </div>
 
         {/* ÚLTIMOS MOVIMIENTOS */}
-        <div className={`rounded-3xl border overflow-hidden ${card}`} style={fadeIn(7)}>
+        <div className={`rounded-3xl border overflow-hidden ${card}`} style={fadeIn(8)}>
           <div className={`px-7 py-5 flex items-center justify-between border-b ${border}`}>
             <div className="flex items-center gap-3">
               <div className="w-9 h-9 rounded-xl flex items-center justify-center text-base" style={{ background: 'rgba(59,130,246,0.12)' }}>🕐</div>
@@ -732,7 +784,7 @@ export default function Dashboard() {
 
         {/* CUENTAS */}
         {Object.keys(cuentas).length > 0 && (
-          <div className={`rounded-3xl border overflow-hidden ${card}`} style={fadeIn(8)}>
+          <div className={`rounded-3xl border overflow-hidden ${card}`} style={fadeIn(9)}>
             <div className={`px-7 py-5 border-b ${border} flex items-center gap-3`}>
               <div className="w-9 h-9 rounded-xl flex items-center justify-center text-base" style={{ background: 'rgba(156,39,176,0.12)' }}>🏦</div>
               <h2 className={`font-bold text-sm ${text}`}>Resumen por cuenta</h2>
@@ -762,7 +814,7 @@ export default function Dashboard() {
         )}
 
         {/* Pie amigable */}
-        <p className={`text-center text-xs pb-4 ${dark ? 'text-gray-700' : 'text-gray-400'}`} style={fadeIn(9)}>
+        <p className={`text-center text-xs pb-4 ${dark ? 'text-gray-700' : 'text-gray-400'}`} style={fadeIn(10)}>
           Numia trabaja por ti 24/7 · Tus datos están seguros 🔒
         </p>
 
