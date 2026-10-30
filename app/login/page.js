@@ -65,8 +65,9 @@ export default function Login() {
     }
 
     setLoadingRecuperar(true)
+    const sitioBase = process.env.NEXT_PUBLIC_SITE_URL || window.location.origin
     const { error } = await supabase.auth.resetPasswordForEmail(emailRecuperar, {
-      redirectTo: `${window.location.origin}/reset-password`
+      redirectTo: `${sitioBase}/reset-password`
     })
     setLoadingRecuperar(false)
 
