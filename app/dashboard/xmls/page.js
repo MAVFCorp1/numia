@@ -1,5 +1,6 @@
 'use client'
 import { useState, useEffect } from 'react'
+import * as XLSX from 'xlsx'
 import { createClient } from '@/lib/supabase'
 import Link from 'next/link'
 
@@ -111,6 +112,97 @@ export default function XMLs() {
     return fechaStr.split('T')[0]
   }
 
+  // ---------- Extracción con IA para PDF / imagen / Excel (formatos sin estructura XML fija) ----------
+  function leerArchivoBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = e => resolve(e.target.result.split(',')[1])
+      reader.onerror = reject
+      reader.readAsDataURL(file)
+    })
+  }
+
+  function leerExcelTexto(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = e => {
+        try {
+          const data = new Uint8Array(e.target.result)
+          const workbook = XLSX.read(data, { type: 'array' })
+          let texto = ''
+          workbook.SheetNames.forEach(nombre => {
+            texto += `\n--- Hoja: ${nombre} ---\n${XLSX.utils.sheet_to_csv(workbook.Sheets[nombre])}`
+          })
+          resolve(texto)
+        } catch (err) { reject(err) }
+      }
+      reader.onerror = reject
+      reader.readAsArrayBuffer(file)
+    })
+  }
+
+  // Devuelve el mismo shape que parseXML(), para que el resto del flujo no distinga el origen
+  async function extraerFacturaConIA(file) {
+    const nombre = file.name.toLowerCase()
+    const instrucciones = `Eres un experto en comprobantes electrónicos del SRI de Ecuador.
+Analiza este comprobante (factura) y extrae los datos.
+Responde SOLO con un JSON válido, sin markdown ni explicaciones:
+{
+  "emisor": "razón social del emisor",
+  "rucEmisor": "RUC del emisor (13 dígitos)",
+  "cliente": "razón social del comprador/cliente",
+  "rucComprador": "RUC o cédula del comprador",
+  "fecha": "YYYY-MM-DD",
+  "subtotal": número (base gravada, sin IVA),
+  "iva": número,
+  "total": número,
+  "secuencial": "número de factura, ej: 001-001-000000123"
+}`
+
+    let content
+    if (nombre.endsWith('.pdf')) {
+      const base64 = await leerArchivoBase64(file)
+      content = [
+        { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } },
+        { type: 'text', text: instrucciones }
+      ]
+    } else if (nombre.match(/\.(png|jpe?g)$/)) {
+      const base64 = await leerArchivoBase64(file)
+      const mediaType = nombre.endsWith('.png') ? 'image/png' : 'image/jpeg'
+      content = [
+        { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
+        { type: 'text', text: instrucciones }
+      ]
+    } else {
+      const texto = await leerExcelTexto(file)
+      content = `${instrucciones}\n\nDatos del archivo:\n${texto}`
+    }
+
+    const response = await fetch('/api/leer-balance', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: [{ role: 'user', content }] })
+    })
+    const data = await response.json()
+    if (data.error) throw new Error(typeof data.error === 'string' ? data.error : JSON.stringify(data.error))
+    if (!data.content) throw new Error('Sin respuesta de IA')
+    const texto = data.content.map(c => c.text || '').join('').trim()
+    const clean = texto.replace(/```json|```/g, '').trim()
+    const extraido = JSON.parse(clean)
+
+    return {
+      emisor: extraido.emisor || '',
+      rucEmisor: extraido.rucEmisor || '',
+      cliente: extraido.cliente || '',
+      rucComprador: extraido.rucComprador || '',
+      fecha: extraido.fecha || '',
+      subtotal: parseFloat(extraido.subtotal) || 0,
+      iva: parseFloat(extraido.iva) || 0,
+      total: parseFloat(extraido.total) || 0,
+      secuencial: extraido.secuencial || ''
+    }
+  }
+
   async function handleFiles(e) {
     const files = [...e.target.files]
     if (files.length === 0) return
@@ -123,8 +215,11 @@ export default function XMLs() {
 
     for (const file of files) {
       try {
-        const text = await file.text()
-        const f = parseXML(text)
+        const esXml = file.name.toLowerCase().endsWith('.xml')
+        if (esXml) setMensaje('Procesando comprobantes...')
+        else setMensaje(`🤖 Leyendo ${file.name} con IA...`)
+
+        const f = esXml ? parseXML(await file.text()) : await extraerFacturaConIA(file)
         const fechaISO = normalizarFecha(f.fecha)
 
         // Detección automática: si el RUC emisor es el mío, es una VENTA (ingreso); si no, COMPRA (gasto)
@@ -157,7 +252,7 @@ export default function XMLs() {
           iva: f.iva,
           total: f.total,
           origen: 'xml',
-          nota: 'Importado desde XML masivo'
+          nota: esXml ? 'Importado desde XML masivo' : 'Importado con IA (carga masiva)'
         })
 
         nuevas.push({ ...f, tipoFactura, esVenta })
@@ -289,7 +384,7 @@ export default function XMLs() {
             </div>
             <div>
               <h2 className={`font-bold text-sm ${text}`}>Sube tus facturas del SRI</h2>
-              <p className={`text-xs ${textSub}`}>Puedes subir varios XMLs a la vez. Detectamos automáticamente venta o compra según tu RUC.</p>
+              <p className={`text-xs ${textSub}`}>Puedes subir varios comprobantes a la vez (XML, PDF, foto o Excel). Detectamos automáticamente venta o compra según tu RUC.</p>
             </div>
           </div>
 
@@ -302,11 +397,11 @@ export default function XMLs() {
             ) : (
               <div className="text-center">
                 <p className="text-3xl mb-2">⬆️</p>
-                <p className={`text-sm font-semibold ${text}`}>Arrastra o haz clic para subir XMLs</p>
-                <p className={`text-xs mt-1 ${textSub}`}>Comprobantes autorizados (.xml) · varios a la vez</p>
+                <p className={`text-sm font-semibold ${text}`}>Arrastra o haz clic para subir tus comprobantes</p>
+                <p className={`text-xs mt-1 ${textSub}`}>XML, PDF, imagen (.png/.jpg) o Excel · varios a la vez</p>
               </div>
             )}
-            <input type="file" accept=".xml" multiple onChange={handleFiles} disabled={procesando} className="hidden" />
+            <input type="file" accept=".xml,.pdf,.png,.jpg,.jpeg,.xls,.xlsx" multiple onChange={handleFiles} disabled={procesando} className="hidden" />
           </label>
 
           {mensaje && !procesando && (

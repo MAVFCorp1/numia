@@ -1,5 +1,6 @@
 'use client'
 import { useState, useEffect } from 'react'
+import * as XLSX from 'xlsx'
 import { createClient } from '@/lib/supabase'
 import Link from 'next/link'
 import {
@@ -8,7 +9,10 @@ import {
   proximaFechaDeclaracion,
   formatearFecha,
   diasRestantes,
-  fechasPorDigito
+  fechasPorDigito,
+  declaracionConfirmada,
+  fechaISO,
+  proximaFechaTrasConfirmar
 } from '@/lib/sriHelpers'
 
 export default function SriPage() {
@@ -70,6 +74,12 @@ export default function SriPage() {
     if (user) await supabase.from('preferencias').upsert({ user_id: user.id, tema: nuevo ? 'oscuro' : 'claro' }, { onConflict: 'user_id' })
   }
 
+  async function confirmarDeclaracion(proximaFecha) {
+    const iso = fechaISO(proximaFecha)
+    setPerfil(prev => ({ ...prev, declaracion_confirmada_fecha: iso }))
+    if (user) await supabase.from('profiles').update({ declaracion_confirmada_fecha: iso }).eq('user_id', user.id)
+  }
+
   async function recargarFacturas() {
     const { data: facts } = await supabase
       .from('facturas_sri')
@@ -79,13 +89,41 @@ export default function SriPage() {
     if (facts) setFacturas(facts)
   }
 
-  // ---------- Subida XML con IA ----------
+  // ---------- Subida de comprobante con IA (XML, PDF, imagen o Excel) ----------
   function leerArchivoTexto(file) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader()
       reader.onload = e => resolve(e.target.result)
       reader.onerror = reject
       reader.readAsText(file)
+    })
+  }
+
+  function leerArchivoBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = e => resolve(e.target.result.split(',')[1])
+      reader.onerror = reject
+      reader.readAsDataURL(file)
+    })
+  }
+
+  function leerExcelTexto(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = e => {
+        try {
+          const data = new Uint8Array(e.target.result)
+          const workbook = XLSX.read(data, { type: 'array' })
+          let texto = ''
+          workbook.SheetNames.forEach(nombre => {
+            texto += `\n--- Hoja: ${nombre} ---\n${XLSX.utils.sheet_to_csv(workbook.Sheets[nombre])}`
+          })
+          resolve(texto)
+        } catch (err) { reject(err) }
+      }
+      reader.onerror = reject
+      reader.readAsArrayBuffer(file)
     })
   }
 
@@ -96,12 +134,9 @@ export default function SriPage() {
     setMensajeIA('🤖 Leyendo el comprobante...')
 
     try {
-      const texto = await leerArchivoTexto(file)
-
-      const messages = [{
-        role: 'user',
-        content: `Eres un experto en comprobantes electrónicos del SRI de Ecuador.
-Analiza este XML de factura y extrae los datos. Distingue entre base gravada con IVA 15% y base exenta/0%.
+      const nombre = file.name.toLowerCase()
+      const instrucciones = `Eres un experto en comprobantes electrónicos del SRI de Ecuador.
+Analiza este comprobante (factura) y extrae los datos. Distingue entre base gravada con IVA 15% y base exenta/0%.
 Responde SOLO con un JSON válido, sin markdown ni explicaciones:
 {
   "fecha": "YYYY-MM-DD",
@@ -113,11 +148,31 @@ Responde SOLO con un JSON válido, sin markdown ni explicaciones:
   "subtotal_exento": número (base 0% o exenta),
   "iva": número,
   "total": número
-}
+}`
 
-XML:
-${texto}`
-      }]
+      let content
+      if (nombre.endsWith('.pdf')) {
+        const base64 = await leerArchivoBase64(file)
+        content = [
+          { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } },
+          { type: 'text', text: instrucciones }
+        ]
+      } else if (nombre.match(/\.(png|jpe?g)$/)) {
+        const base64 = await leerArchivoBase64(file)
+        const mediaType = nombre.endsWith('.png') ? 'image/png' : 'image/jpeg'
+        content = [
+          { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
+          { type: 'text', text: instrucciones }
+        ]
+      } else if (nombre.match(/\.xlsx?$/)) {
+        const texto = await leerExcelTexto(file)
+        content = `${instrucciones}\n\nDatos del archivo:\n${texto}`
+      } else {
+        const texto = await leerArchivoTexto(file)
+        content = `${instrucciones}\n\nXML:\n${texto}`
+      }
+
+      const messages = [{ role: 'user', content }]
 
       setMensajeIA('🤖 Extrayendo datos de la factura...')
 
@@ -143,7 +198,7 @@ ${texto}`
       setFNumero(extraido.numero_factura || '')
       setFSubtotal(extraido.subtotal?.toString() || '')
       setFSubtotalExento(extraido.subtotal_exento?.toString() || '')
-      setFNota('Importado desde XML')
+      setFNota('Importado con IA')
       setError('')
       setMostrarForm(true)
       setMensajeIA('✅ Datos extraídos. Revisa y guarda.')
@@ -216,7 +271,7 @@ ${texto}`
       subtotal_exento: subtotalExento,
       iva,
       total,
-      origen: (fNota && fNota.includes('XML')) ? 'xml' : 'manual',
+      origen: (fNota && fNota.includes('IA')) ? 'xml' : 'manual',
       nota: fNota || null
     }
 
@@ -249,6 +304,8 @@ ${texto}`
   const dia = diaDeclaracion(rucCalendario)
   const proxima = proximaFechaDeclaracion(rucCalendario)
   const dias = diasRestantes(proxima)
+  const yaDeclarado = declaracionConfirmada(perfil, proxima)
+  const proximaMostrada = yaDeclarado ? proximaFechaTrasConfirmar(rucCalendario, proxima) : proxima
 
   const dark = darkMode
   const bg = dark ? 'bg-gray-950' : 'bg-gray-100'
@@ -353,16 +410,35 @@ ${texto}`
 
             <div className={`md:col-span-2 rounded-xl p-5 ${dark ? 'bg-gray-800' : 'bg-gray-50'}`}>
               {dia ? (
-                <div className="flex items-center justify-between flex-wrap gap-4">
-                  <div>
-                    <p className={`text-xs ${dark ? 'text-gray-400' : 'text-gray-500'}`}>Próxima declaración de IVA</p>
-                    <p className={`text-lg font-bold ${text}`}>{formatearFecha(proxima)}</p>
+                yaDeclarado ? (
+                  <div className="flex items-center justify-between flex-wrap gap-4">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl" style={{ background: 'rgba(16,185,129,0.15)' }}>✅</div>
+                      <div>
+                        <p className={`text-sm font-bold ${text}`}>Ya declaraste el IVA de este período</p>
+                        <p className={`text-xs ${dark ? 'text-gray-400' : 'text-gray-500'}`}>Próxima: {formatearFecha(proximaMostrada)}</p>
+                      </div>
+                    </div>
                   </div>
-                  <div className={`px-4 py-2 rounded-xl text-center ${dias !== null && dias <= 5 ? 'bg-red-500/20 text-red-400' : dias !== null && dias <= 12 ? 'bg-yellow-500/20 text-yellow-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
-                    <p className="text-2xl font-black">{dias}</p>
-                    <p className="text-xs font-medium">{dias === 1 ? 'día restante' : 'días restantes'}</p>
+                ) : (
+                  <div className="flex items-center justify-between flex-wrap gap-4">
+                    <div>
+                      <p className={`text-xs ${dark ? 'text-gray-400' : 'text-gray-500'}`}>Próxima declaración de IVA</p>
+                      <p className={`text-lg font-bold ${text}`}>{formatearFecha(proxima)}</p>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <div className={`px-4 py-2 rounded-xl text-center ${dias !== null && dias <= 5 ? 'bg-red-500/20 text-red-400' : dias !== null && dias <= 12 ? 'bg-yellow-500/20 text-yellow-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
+                        <p className="text-2xl font-black">{dias}</p>
+                        <p className="text-xs font-medium">{dias === 1 ? 'día restante' : 'días restantes'}</p>
+                      </div>
+                      <button onClick={() => confirmarDeclaracion(proxima)}
+                        className="text-xs px-4 py-3 rounded-xl font-bold text-white transition-all hover:scale-105"
+                        style={{ background: 'linear-gradient(135deg, #E91E8C, #9C27B0)', boxShadow: '0 4px 20px rgba(233,30,140,0.3)' }}>
+                        ✓ Ya declaré
+                      </button>
+                    </div>
                   </div>
-                </div>
+                )
               ) : (
                 <p className={`text-sm ${dark ? 'text-gray-400' : 'text-gray-500'}`}>
                   Ingresa un RUC válido (13 dígitos) para ver tu fecha de declaración.
@@ -397,8 +473,8 @@ ${texto}`
               🤖
             </div>
             <div>
-              <h2 className={`font-bold text-sm ${text}`}>Importar comprobante XML</h2>
-              <p className={`text-xs ${dark ? 'text-gray-400' : 'text-gray-500'}`}>Sube el XML del SRI — la IA extrae los datos y podrás revisarlos antes de guardar</p>
+              <h2 className={`font-bold text-sm ${text}`}>Importar comprobante</h2>
+              <p className={`text-xs ${dark ? 'text-gray-400' : 'text-gray-500'}`}>Sube el XML, PDF, foto o Excel de tu factura — la IA extrae los datos y podrás revisarlos antes de guardar</p>
             </div>
           </div>
 
@@ -411,11 +487,11 @@ ${texto}`
             ) : (
               <div className="text-center">
                 <p className="text-3xl mb-2">📄</p>
-                <p className={`text-sm font-semibold ${text}`}>Arrastra o haz clic para subir XML</p>
-                <p className={`text-xs mt-1 ${dark ? 'text-gray-400' : 'text-gray-500'}`}>Comprobante electrónico (.xml)</p>
+                <p className={`text-sm font-semibold ${text}`}>Arrastra o haz clic para subir tu comprobante</p>
+                <p className={`text-xs mt-1 ${dark ? 'text-gray-400' : 'text-gray-500'}`}>XML, PDF, imagen (.png/.jpg) o Excel</p>
               </div>
             )}
-            <input type="file" accept=".xml,text/xml,application/xml" onChange={procesarXml} disabled={procesandoIA} className="hidden" />
+            <input type="file" accept=".xml,text/xml,application/xml,.pdf,.png,.jpg,.jpeg,.xls,.xlsx" onChange={procesarXml} disabled={procesandoIA} className="hidden" />
           </label>
 
           {mensajeIA && !procesandoIA && (
@@ -471,7 +547,7 @@ ${texto}`
                       </td>
                       <td className={`py-2 pr-4 ${dark ? 'text-gray-300' : 'text-gray-700'}`}>
                         <span className="block truncate max-w-[160px]">{f.razon_social || f.ruc_emisor || '—'}</span>
-                        {f.origen === 'xml' && <span className="text-pink-400 text-xs">XML</span>}
+                        {f.origen === 'xml' && <span className="text-pink-400 text-xs">IA</span>}
                       </td>
                       <td className={`py-2 pr-4 text-right ${text}`}>${parseFloat(f.subtotal || 0).toFixed(2)}</td>
                       <td className={`py-2 pr-4 text-right ${dark ? 'text-gray-400' : 'text-gray-500'}`}>${parseFloat(f.subtotal_exento || 0).toFixed(2)}</td>

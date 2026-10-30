@@ -9,6 +9,7 @@ import {
   categoriasPasivo,
   valorActualActivo,
   infoDepreciacion,
+  gananciaVenta,
   calcularPatrimonioNeto,
   reconstruirSerieHistorica,
   combinarSerieConSnapshots,
@@ -96,7 +97,20 @@ export default function PatrimonioPage() {
   const [fValorInicial, setFValorInicial] = useState('')
   const [fFechaCompra, setFFechaCompra] = useState('')
   const [fTasaApreciacion, setFTasaApreciacion] = useState('')
+  const [fValorComercial, setFValorComercial] = useState('')
   const [fNota, setFNota] = useState('')
+
+  // Modal vender activo
+  const [vendiendoActivo, setVendiendoActivo] = useState(null)
+  const [vFechaVenta, setVFechaVenta] = useState('')
+  const [vMontoVenta, setVMontoVenta] = useState('')
+  const [errorVenta, setErrorVenta] = useState('')
+
+  // Modal precancelar pasivo
+  const [precancelandoPasivo, setPrecancelandoPasivo] = useState(null)
+  const [lqFecha, setLqFecha] = useState('')
+  const [lqMonto, setLqMonto] = useState('')
+  const [errorLiquidacion, setErrorLiquidacion] = useState('')
 
   // Modal pasivo
   const [mostrarFormPasivo, setMostrarFormPasivo] = useState(false)
@@ -267,6 +281,7 @@ export default function PatrimonioPage() {
     setFValorInicial('')
     setFFechaCompra('')
     setFTasaApreciacion('')
+    setFValorComercial('')
     setFNota('')
     setErrorActivo('')
     setMostrarFormActivo(true)
@@ -279,6 +294,7 @@ export default function PatrimonioPage() {
     setFValorInicial(String(a.valor_inicial ?? ''))
     setFFechaCompra(a.fecha_compra || '')
     setFTasaApreciacion(a.tasa_apreciacion_anual != null ? String(a.tasa_apreciacion_anual * 100) : '')
+    setFValorComercial(a.valor_comercial != null ? String(a.valor_comercial) : '')
     setFNota(a.nota || '')
     setErrorActivo('')
     setMostrarFormActivo(true)
@@ -305,6 +321,7 @@ export default function PatrimonioPage() {
       valor_inicial: valorInicial,
       fecha_compra: comportamiento !== 'fijo' ? (fFechaCompra || null) : null,
       tasa_apreciacion_anual: comportamiento === 'aprecia' && fTasaApreciacion ? (parseFloat(fTasaApreciacion) / 100) : null,
+      valor_comercial: fValorComercial !== '' ? parseFloat(fValorComercial) : null,
       nota: fNota || null
     }
 
@@ -409,9 +426,102 @@ export default function PatrimonioPage() {
     recargarSnapshots()
   }
 
+  // ---------- Vender activo ----------
+  function abrirVender(a) {
+    setVendiendoActivo(a)
+    setVFechaVenta(new Date().toISOString().split('T')[0])
+    setVMontoVenta('')
+    setErrorVenta('')
+  }
+
+  function cerrarVender() {
+    setVendiendoActivo(null)
+    setErrorVenta('')
+  }
+
+  async function guardarVenta() {
+    setErrorVenta('')
+    const monto = parseFloat(vMontoVenta) || 0
+    if (!vFechaVenta || monto <= 0) { setErrorVenta('Ingresa fecha y un monto de venta mayor a 0'); return }
+
+    const a = vendiendoActivo
+    const ganancia = monto - parseFloat(a.valor_inicial || 0)
+
+    const { error: dbErr } = await supabase.from('activos').update({
+      vendido: true,
+      fecha_venta: vFechaVenta,
+      monto_venta: monto
+    }).eq('id', a.id)
+    if (dbErr) { setErrorVenta('No se pudo registrar la venta'); return }
+
+    await supabase.from('movimientos').insert({
+      user_id: user.id,
+      fecha: vFechaVenta,
+      descripcion: 'Venta de ' + a.nombre,
+      monto,
+      tipo: 'ingreso',
+      cuenta: 'patrimonio',
+      categoria: 'venta-activo',
+      nota: `Ganancia: $${ganancia.toFixed(2)}`
+    })
+
+    cerrarVender()
+    const nuevosActivos = await recargarActivos()
+    await guardarSnapshotHoy(nuevosActivos, pasivos)
+    recargarSnapshots()
+  }
+
+  // ---------- Precancelar pasivo ----------
+  function abrirPrecancelar(p) {
+    setPrecancelandoPasivo(p)
+    setLqFecha(new Date().toISOString().split('T')[0])
+    setLqMonto(String(p.saldo_actual ?? ''))
+    setErrorLiquidacion('')
+  }
+
+  function cerrarPrecancelar() {
+    setPrecancelandoPasivo(null)
+    setErrorLiquidacion('')
+  }
+
+  async function guardarPrecancelacion() {
+    setErrorLiquidacion('')
+    const monto = parseFloat(lqMonto) || 0
+    if (!lqFecha || monto <= 0) { setErrorLiquidacion('Ingresa fecha y un monto pagado mayor a 0'); return }
+
+    const p = precancelandoPasivo
+
+    const { error: dbErr } = await supabase.from('pasivos').update({
+      saldo_actual: 0,
+      liquidado: true,
+      fecha_liquidacion: lqFecha,
+      monto_liquidacion: monto
+    }).eq('id', p.id)
+    if (dbErr) { setErrorLiquidacion('No se pudo registrar la precancelación'); return }
+
+    await supabase.from('movimientos').insert({
+      user_id: user.id,
+      fecha: lqFecha,
+      descripcion: 'Pago total de ' + p.nombre,
+      monto,
+      tipo: 'gasto',
+      cuenta: 'patrimonio',
+      categoria: 'deudas',
+      nota: 'Precancelación'
+    })
+
+    cerrarPrecancelar()
+    const nuevosPasivos = await recargarPasivos()
+    await guardarSnapshotHoy(activos, nuevosPasivos)
+    recargarSnapshots()
+  }
+
   // ---------- Cálculos derivados ----------
   const hoy = new Date()
-  const activosConValor = activos.map(a => ({ ...a, valorActual: valorActualActivo(a, hoy) }))
+  const activosConValor = activos.filter(a => !a.vendido).map(a => ({ ...a, valorActual: valorActualActivo(a, hoy) }))
+  const activosVendidos = activos.filter(a => a.vendido)
+  const pasivosActivos = pasivos.filter(p => !p.liquidado)
+  const pasivosLiquidados = pasivos.filter(p => p.liquidado)
   const { totalActivos, totalPasivos, patrimonioNeto } = calcularPatrimonioNeto(activos, pasivos, hoy)
   const serieHistorica = combinarSerieConSnapshots(reconstruirSerieHistorica({ activos, pasivos, hoy }), snapshots)
   const sinDatos = activos.length === 0 && pasivos.length === 0
@@ -545,10 +655,12 @@ export default function PatrimonioPage() {
                         <td className={`py-2 pr-4 text-right ${dark ? 'text-gray-400' : 'text-gray-500'}`}>${inicial.toFixed(2)}</td>
                         <td className={`py-2 pr-4 text-right font-bold ${colorValor}`}>
                           {sube ? '↑ ' : baja ? '↓ ' : ''}${a.valorActual.toFixed(2)}
-                          {dep && <span className={`block text-[10px] font-normal ${dark ? 'text-gray-500' : 'text-gray-400'}`}>en {dep.vidaUtilAnios} años: $0.00</span>}
+                          {a.valor_comercial != null && <span className={`block text-[10px] font-normal ${dark ? 'text-gray-500' : 'text-gray-400'}`}>(manual)</span>}
+                          {a.valor_comercial == null && dep && <span className={`block text-[10px] font-normal ${dark ? 'text-gray-500' : 'text-gray-400'}`}>en {dep.vidaUtilAnios} años: $0.00</span>}
                         </td>
                         <td className={`py-2 pr-4 ${dark ? 'text-gray-400' : 'text-gray-500'}`}>{a.fecha_compra || '—'}</td>
                         <td className="py-2 text-right whitespace-nowrap">
+                          <button onClick={() => abrirVender(a)} className="text-gray-400 hover:text-emerald-400 text-xs mr-3 transition-colors">Vender</button>
                           <button onClick={() => abrirEditarActivo(a)} className="text-gray-400 hover:text-pink-400 text-xs mr-3 transition-colors">Editar</button>
                           <button onClick={() => eliminarActivo(a.id)} className="text-gray-400 hover:text-red-400 text-xs transition-colors">Eliminar</button>
                         </td>
@@ -560,6 +672,41 @@ export default function PatrimonioPage() {
             </div>
           )}
         </div>
+
+        {/* ACTIVOS VENDIDOS */}
+        {activosVendidos.length > 0 && (
+          <div className={`rounded-2xl border p-6 mb-8 ${card}`}>
+            <h2 className={`font-bold text-sm mb-1 ${text}`}>💸 Activos vendidos</h2>
+            <p className={`text-xs mb-4 ${dark ? 'text-gray-400' : 'text-gray-500'}`}>Ya no cuentan en tu patrimonio — el ingreso quedó registrado en Banco.</p>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className={`text-left ${dark ? 'text-gray-400 border-gray-800' : 'text-gray-500 border-gray-200'} border-b`}>
+                    <th className="py-2 pr-4 font-semibold">Nombre</th>
+                    <th className="py-2 pr-4 font-semibold">Fecha venta</th>
+                    <th className="py-2 pr-4 font-semibold text-right">Monto venta</th>
+                    <th className="py-2 font-semibold text-right">Ganancia</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {activosVendidos.map(a => {
+                    const ganancia = gananciaVenta(a)
+                    return (
+                      <tr key={a.id} className={`border-b ${dark ? 'border-gray-800' : 'border-gray-100'}`}>
+                        <td className={`py-2 pr-4 ${text}`}>{a.nombre}</td>
+                        <td className={`py-2 pr-4 ${dark ? 'text-gray-400' : 'text-gray-500'}`}>{a.fecha_venta}</td>
+                        <td className={`py-2 pr-4 text-right ${text}`}>${parseFloat(a.monto_venta || 0).toFixed(2)}</td>
+                        <td className={`py-2 text-right font-bold ${ganancia >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                          {ganancia >= 0 ? '+' : ''}${ganancia.toFixed(2)}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
 
         {/* PAGOS AMBIGUOS PENDIENTES DE RESOLVER */}
         {ambiguos.length > 0 && (
@@ -599,7 +746,7 @@ export default function PatrimonioPage() {
             </button>
           </div>
 
-          {pasivos.length === 0 ? (
+          {pasivosActivos.length === 0 ? (
             <div className="py-10 text-center">
               <p className={`text-sm ${dark ? 'text-gray-500' : 'text-gray-400'}`}>No hay pasivos todavía.</p>
             </div>
@@ -617,7 +764,7 @@ export default function PatrimonioPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {pasivos.map(p => {
+                  {pasivosActivos.map(p => {
                     const info = categoriaPasivoInfo[p.categoria] || { label: p.categoria, emoji: '📦' }
                     return (
                       <tr key={p.id} className={`border-b ${dark ? 'border-gray-800' : 'border-gray-100'}`}>
@@ -627,6 +774,7 @@ export default function PatrimonioPage() {
                         <td className={`py-2 pr-4 text-right ${dark ? 'text-gray-400' : 'text-gray-500'}`}>{p.pago_mensual != null ? `$${parseFloat(p.pago_mensual).toFixed(2)}` : '—'}</td>
                         <td className={`py-2 pr-4 ${dark ? 'text-gray-400' : 'text-gray-500'}`}>{p.fecha_vencimiento || '—'}</td>
                         <td className="py-2 text-right whitespace-nowrap">
+                          <button onClick={() => abrirPrecancelar(p)} className="text-gray-400 hover:text-emerald-400 text-xs mr-3 transition-colors">Precancelar</button>
                           <button onClick={() => abrirEditarPasivo(p)} className="text-gray-400 hover:text-pink-400 text-xs mr-3 transition-colors">Editar</button>
                           <button onClick={() => eliminarPasivo(p.id)} className="text-gray-400 hover:text-red-400 text-xs transition-colors">Eliminar</button>
                         </td>
@@ -638,6 +786,34 @@ export default function PatrimonioPage() {
             </div>
           )}
         </div>
+
+        {/* PASIVOS LIQUIDADOS */}
+        {pasivosLiquidados.length > 0 && (
+          <div className={`rounded-2xl border p-6 mt-8 ${card}`}>
+            <h2 className={`font-bold text-sm mb-1 ${text}`}>✅ Pasivos liquidados</h2>
+            <p className={`text-xs mb-4 ${dark ? 'text-gray-400' : 'text-gray-500'}`}>Deudas pagadas por completo — ya no cuentan en tu patrimonio.</p>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className={`text-left ${dark ? 'text-gray-400 border-gray-800' : 'text-gray-500 border-gray-200'} border-b`}>
+                    <th className="py-2 pr-4 font-semibold">Nombre</th>
+                    <th className="py-2 pr-4 font-semibold">Fecha</th>
+                    <th className="py-2 font-semibold text-right">Monto pagado</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pasivosLiquidados.map(p => (
+                    <tr key={p.id} className={`border-b ${dark ? 'border-gray-800' : 'border-gray-100'}`}>
+                      <td className={`py-2 pr-4 ${text}`}>{p.nombre}</td>
+                      <td className={`py-2 pr-4 ${dark ? 'text-gray-400' : 'text-gray-500'}`}>{p.fecha_liquidacion}</td>
+                      <td className="py-2 text-right font-bold text-emerald-400">${parseFloat(p.monto_liquidacion || 0).toFixed(2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
 
         {/* ABONOS APLICADOS AUTOMÁTICAMENTE */}
         {abonos.length > 0 && (
@@ -742,6 +918,12 @@ export default function PatrimonioPage() {
               )}
 
               <div className="sm:col-span-2">
+                <label className={`block text-xs font-semibold mb-1 ${dark ? 'text-gray-300' : 'text-gray-700'}`}>Valor comercial (opcional — corrige el cálculo a mano, ej. una tasación real)</label>
+                <input type="number" step="0.01" value={fValorComercial} onChange={e => setFValorComercial(e.target.value)} placeholder="Déjalo vacío para usar el cálculo automático"
+                  className={`w-full px-3 py-2 rounded-lg border text-sm outline-none ${inputClass}`} />
+              </div>
+
+              <div className="sm:col-span-2">
                 <label className={`block text-xs font-semibold mb-1 ${dark ? 'text-gray-300' : 'text-gray-700'}`}>Nota (opcional)</label>
                 <input type="text" value={fNota} onChange={e => setFNota(e.target.value)} placeholder="Detalle adicional..."
                   className={`w-full px-3 py-2 rounded-lg border text-sm outline-none ${inputClass}`} />
@@ -837,6 +1019,91 @@ export default function PatrimonioPage() {
                 className="flex-1 py-3 rounded-xl text-sm font-bold text-white transition-all hover:scale-105"
                 style={{ background: 'linear-gradient(135deg, #E91E8C, #9C27B0)', boxShadow: '0 4px 20px rgba(233,30,140,0.3)' }}>
                 {editandoPasivoId ? 'Guardar cambios' : 'Agregar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL VENDER ACTIVO */}
+      {vendiendoActivo && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-6 z-50 overflow-y-auto">
+          <div className={`rounded-2xl border p-8 w-full max-w-md my-8 ${dark ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
+            <h2 className={`font-bold text-lg mb-2 ${text}`}>Vender {vendiendoActivo.nombre}</h2>
+            <p className={`text-sm mb-6 ${dark ? 'text-gray-400' : 'text-gray-500'}`}>Se registra como ingreso en tus movimientos y el activo sale de tu patrimonio activo.</p>
+
+            {errorVenta && (
+              <div className="bg-red-500/10 border border-red-500/30 text-red-400 text-sm p-3 rounded-lg mb-5">{errorVenta}</div>
+            )}
+
+            <div className="grid grid-cols-1 gap-4">
+              <div>
+                <label className={`block text-xs font-semibold mb-1 ${dark ? 'text-gray-300' : 'text-gray-700'}`}>Fecha de venta</label>
+                <input type="date" value={vFechaVenta} onChange={e => setVFechaVenta(e.target.value)}
+                  className={`w-full px-3 py-2 rounded-lg border text-sm outline-none ${inputClass}`} />
+              </div>
+              <div>
+                <label className={`block text-xs font-semibold mb-1 ${dark ? 'text-gray-300' : 'text-gray-700'}`}>Monto de venta</label>
+                <input type="number" step="0.01" value={vMontoVenta} onChange={e => setVMontoVenta(e.target.value)} placeholder="0.00"
+                  className={`w-full px-3 py-2 rounded-lg border text-sm outline-none ${inputClass}`} />
+              </div>
+              {vMontoVenta && (
+                <p className={`text-xs px-3 py-2 rounded-lg ${dark ? 'bg-gray-800 text-gray-400' : 'bg-gray-50 text-gray-600'}`}>
+                  Ganancia vs. costo original: <span className={`font-bold ${(parseFloat(vMontoVenta) - parseFloat(vendiendoActivo.valor_inicial || 0)) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    ${(parseFloat(vMontoVenta) - parseFloat(vendiendoActivo.valor_inicial || 0)).toFixed(2)}
+                  </span>
+                </p>
+              )}
+            </div>
+
+            <div className="flex gap-3 mt-6">
+              <button onClick={cerrarVender}
+                className={`flex-1 py-3 rounded-xl text-sm font-bold transition-all ${dark ? 'text-gray-300 bg-gray-800 border border-gray-700 hover:bg-gray-700' : 'text-gray-700 bg-gray-100 border border-gray-200 hover:bg-gray-200'}`}>
+                Cancelar
+              </button>
+              <button onClick={guardarVenta}
+                className="flex-1 py-3 rounded-xl text-sm font-bold text-white transition-all hover:scale-105"
+                style={{ background: 'linear-gradient(135deg, #10B981, #059669)', boxShadow: '0 4px 20px rgba(16,185,129,0.3)' }}>
+                Confirmar venta
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL PRECANCELAR PASIVO */}
+      {precancelandoPasivo && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-6 z-50 overflow-y-auto">
+          <div className={`rounded-2xl border p-8 w-full max-w-md my-8 ${dark ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
+            <h2 className={`font-bold text-lg mb-2 ${text}`}>Precancelar {precancelandoPasivo.nombre}</h2>
+            <p className={`text-sm mb-6 ${dark ? 'text-gray-400' : 'text-gray-500'}`}>Se registra como gasto en tus movimientos y el pasivo queda saldado.</p>
+
+            {errorLiquidacion && (
+              <div className="bg-red-500/10 border border-red-500/30 text-red-400 text-sm p-3 rounded-lg mb-5">{errorLiquidacion}</div>
+            )}
+
+            <div className="grid grid-cols-1 gap-4">
+              <div>
+                <label className={`block text-xs font-semibold mb-1 ${dark ? 'text-gray-300' : 'text-gray-700'}`}>Fecha de pago</label>
+                <input type="date" value={lqFecha} onChange={e => setLqFecha(e.target.value)}
+                  className={`w-full px-3 py-2 rounded-lg border text-sm outline-none ${inputClass}`} />
+              </div>
+              <div>
+                <label className={`block text-xs font-semibold mb-1 ${dark ? 'text-gray-300' : 'text-gray-700'}`}>Monto pagado</label>
+                <input type="number" step="0.01" value={lqMonto} onChange={e => setLqMonto(e.target.value)} placeholder="0.00"
+                  className={`w-full px-3 py-2 rounded-lg border text-sm outline-none ${inputClass}`} />
+              </div>
+            </div>
+
+            <div className="flex gap-3 mt-6">
+              <button onClick={cerrarPrecancelar}
+                className={`flex-1 py-3 rounded-xl text-sm font-bold transition-all ${dark ? 'text-gray-300 bg-gray-800 border border-gray-700 hover:bg-gray-700' : 'text-gray-700 bg-gray-100 border border-gray-200 hover:bg-gray-200'}`}>
+                Cancelar
+              </button>
+              <button onClick={guardarPrecancelacion}
+                className="flex-1 py-3 rounded-xl text-sm font-bold text-white transition-all hover:scale-105"
+                style={{ background: 'linear-gradient(135deg, #10B981, #059669)', boxShadow: '0 4px 20px rgba(16,185,129,0.3)' }}>
+                Confirmar pago
               </button>
             </div>
           </div>

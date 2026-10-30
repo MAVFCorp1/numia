@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase'
 import { useRouter } from 'next/navigation'
 import { categoriaInfo } from '@/lib/categorizador'
-import { diaDeclaracion, proximaFechaDeclaracion, formatearFecha, diasRestantes } from '@/lib/sriHelpers'
+import { diaDeclaracion, proximaFechaDeclaracion, formatearFecha, diasRestantes, declaracionConfirmada, fechaISO, proximaFechaTrasConfirmar } from '@/lib/sriHelpers'
 import { generarAlertas, construirPromptSugerencias, TIPOS_ALERTA } from '@/lib/alertas'
 import { calcularPatrimonioNeto } from '@/lib/patrimonioHelpers'
 
@@ -74,6 +74,7 @@ export default function Dashboard() {
   const [sugerenciasIA, setSugerenciasIA] = useState([])
   const [cargandoIA, setCargandoIA] = useState(false)
   const [panelAbierto, setPanelAbierto] = useState(false)
+  const [mesSeleccionado, setMesSeleccionado] = useState(null) // null = todo el historial; 'YYYY-MM' = un mes puntual
   const router = useRouter()
   const supabase = createClient()
 
@@ -106,12 +107,13 @@ export default function Dashboard() {
       const ivaC = (facts || []).filter(f => f.tipo === 'compra').reduce((s, f) => s + parseFloat(f.iva || 0), 0)
       const proximaF = proximaFechaDeclaracion(perfil?.ruc)
       const diasF = diasRestantes(proximaF)
+      const yaDeclaradoF = declaracionConfirmada(perfil, proximaF)
       const alertasGeneradas = generarAlertas({
         movimientos: movs || [],
         facturas: facts || [],
         deducibles: dedus || [],
         perfil,
-        diasDeclaracion: diasF,
+        diasDeclaracion: yaDeclaradoF ? null : diasF,
         ivaSaldo: ivaV - ivaC
       })
       setAlertas(alertasGeneradas)
@@ -162,6 +164,12 @@ export default function Dashboard() {
     router.push('/login')
   }
 
+  async function confirmarDeclaracion(proximaFecha) {
+    const iso = fechaISO(proximaFecha)
+    setPerfil(prev => ({ ...prev, declaracion_confirmada_fecha: iso }))
+    if (user) await supabase.from('profiles').update({ declaracion_confirmada_fecha: iso }).eq('user_id', user.id)
+  }
+
   if (loading) return (
     <div className="min-h-screen bg-gray-950 flex items-center justify-center">
       <div className="text-center">
@@ -178,8 +186,11 @@ export default function Dashboard() {
   const textSub = dark ? 'text-gray-400' : 'text-gray-500'
   const border = dark ? 'border-gray-800' : 'border-gray-100'
 
-  const ingresos = movimientos.filter(m => m.tipo === 'ingreso').reduce((s, m) => s + parseFloat(m.monto), 0)
-  const gastos = movimientos.filter(m => m.tipo === 'gasto').reduce((s, m) => s + parseFloat(m.monto), 0)
+  // Movimientos filtrados al mes elegido en "Ingresos y gastos por mes" (o todo el historial si no hay selección)
+  const movimientosFiltrados = mesSeleccionado ? movimientos.filter(m => m.fecha?.slice(0, 7) === mesSeleccionado) : movimientos
+
+  const ingresos = movimientosFiltrados.filter(m => m.tipo === 'ingreso').reduce((s, m) => s + parseFloat(m.monto), 0)
+  const gastos = movimientosFiltrados.filter(m => m.tipo === 'gasto').reduce((s, m) => s + parseFloat(m.monto), 0)
   const utilidad = ingresos - gastos
   const salud = Math.min(100, Math.max(0, Math.round((utilidad / Math.max(ingresos, 1)) * 100 + 50)))
   const esEmpresa = perfil?.tipo === 'empresa'
@@ -195,11 +206,13 @@ export default function Dashboard() {
   const diaDecl = diaDeclaracion(ruc)
   const proxima = proximaFechaDeclaracion(ruc)
   const dias = diasRestantes(proxima)
-  const urgente = dias !== null && dias <= 5
+  const yaDeclarado = declaracionConfirmada(perfil, proxima)
+  const proximaMostrada = yaDeclarado ? proximaFechaTrasConfirmar(ruc, proxima) : proxima
+  const urgente = !yaDeclarado && dias !== null && dias <= 5
 
   const catGastos = {}
   const catIngresos = {}
-  movimientos.forEach(m => {
+  movimientosFiltrados.forEach(m => {
     const monto = parseFloat(m.monto)
     if (m.tipo === 'gasto') catGastos[m.categoria] = (catGastos[m.categoria] || 0) + monto
     else catIngresos[m.categoria] = (catIngresos[m.categoria] || 0) + monto
@@ -210,11 +223,62 @@ export default function Dashboard() {
   const maxIng = topIngresos[0]?.[1] || 1
 
   const cuentas = {}
-  movimientos.forEach(m => {
+  movimientosFiltrados.forEach(m => {
     if (!cuentas[m.cuenta]) cuentas[m.cuenta] = { ing: 0, gas: 0 }
     if (m.tipo === 'ingreso') cuentas[m.cuenta].ing += parseFloat(m.monto)
     else cuentas[m.cuenta].gas += parseFloat(m.monto)
   })
+
+  // Ingresos y gastos agrupados por mes (a partir de la fecha de cada movimiento), últimos 12 meses con datos
+  const porMes = {}
+  movimientos.forEach(m => {
+    const mes = m.fecha?.slice(0, 7)
+    if (!mes) return
+    if (!porMes[mes]) porMes[mes] = { ingreso: 0, gasto: 0 }
+    if (m.tipo === 'ingreso') porMes[mes].ingreso += parseFloat(m.monto || 0)
+    else porMes[mes].gasto += parseFloat(m.monto || 0)
+  })
+  const mesesOrdenados = Object.keys(porMes).sort().slice(-12)
+  const nombresMeses = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic']
+  const labelMes = (m) => {
+    const [anio, mesNum] = m.split('-')
+    return `${nombresMeses[parseInt(mesNum, 10) - 1]} ${anio.slice(2)}`
+  }
+
+  // Variación vs. el mes anterior (% de cambio)
+  const mesActualKey = mesesOrdenados[mesesOrdenados.length - 1]
+  const mesAnteriorKey = mesesOrdenados[mesesOrdenados.length - 2]
+  const variacionPct = (actual, anterior) => (anterior > 0 ? ((actual - anterior) / anterior) * 100 : null)
+  const variacionIngreso = mesAnteriorKey ? variacionPct(porMes[mesActualKey].ingreso, porMes[mesAnteriorKey].ingreso) : null
+  const variacionGasto = mesAnteriorKey ? variacionPct(porMes[mesActualKey].gasto, porMes[mesAnteriorKey].gasto) : null
+
+  // Proyección del próximo mes: promedio de los últimos meses COMPLETOS (se excluye el mes en curso,
+  // que viene incompleto y arrastraría el promedio hacia abajo) + un ajuste por tendencia acotado para
+  // que un mes atípico no reviente la proyección a 0.
+  const hoy = new Date()
+  const mesActualCalendario = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, '0')}`
+  const mesesCompletos = mesesOrdenados.filter(m => m !== mesActualCalendario)
+
+  function proyectarSiguienteMes(campo) {
+    const base = mesesCompletos.length > 0 ? mesesCompletos : mesesOrdenados
+    if (base.length === 0) return 0
+    const tramo = base.slice(-3)
+    const promedio = tramo.reduce((s, m) => s + porMes[m][campo], 0) / tramo.length
+    if (tramo.length === 1) return promedio
+
+    const deltas = tramo.slice(1).map((mes, i) => porMes[mes][campo] - porMes[tramo[i]][campo])
+    const tendencia = deltas.reduce((a, b) => a + b, 0) / deltas.length
+    const tendenciaAcotada = Math.max(Math.min(tendencia, promedio * 0.3), -promedio * 0.3)
+    return Math.max(promedio + tendenciaAcotada, 0)
+  }
+  const proyeccionIngreso = proyectarSiguienteMes('ingreso')
+  const proyeccionGasto = proyectarSiguienteMes('gasto')
+  const mesSiguienteLabel = (() => {
+    const d = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 1)
+    return labelMes(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`)
+  })()
+
+  const maxValorMes = Math.max(1, proyeccionIngreso, proyeccionGasto, ...mesesOrdenados.map(m => Math.max(porMes[m].ingreso, porMes[m].gasto)))
 
   const saludo = saludoPorHora()
 
@@ -393,27 +457,46 @@ export default function Dashboard() {
         {/* BANNER DECLARACIÓN SRI */}
         <div style={fadeIn(2)}>
           {diaDecl ? (
-            <a href="/dashboard/sri"
-              className="block rounded-3xl p-7 relative overflow-hidden transition-all hover:scale-[1.01] group"
-              style={{ background: 'linear-gradient(135deg, #E91E8C, #9C27B0)', boxShadow: '0 20px 60px rgba(233,30,140,0.25)' }}>
-              <div className="absolute top-0 right-0 w-72 h-72 rounded-full opacity-20 -mr-20 -mt-20"
-                style={{ background: 'radial-gradient(circle, #fff, transparent 70%)' }} />
-              <div className="absolute bottom-0 left-1/3 w-48 h-48 rounded-full opacity-10 -mb-20"
-                style={{ background: 'radial-gradient(circle, #fff, transparent 70%)' }} />
-              <div className="relative flex items-center justify-between flex-wrap gap-5">
-                <div>
-                  <p className="text-white/80 text-xs font-bold uppercase tracking-wider mb-1.5">📅 Próxima declaración de IVA</p>
-                  <p className="text-white text-3xl font-black">{formatearFecha(proxima)}</p>
-                  <p className="text-white/70 text-sm mt-1.5">Declaras hasta el día {diaDecl} de cada mes según tu RUC</p>
+            yaDeclarado ? (
+              <div className={`rounded-3xl p-7 border-2 flex items-center justify-between flex-wrap gap-5 ${dark ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-emerald-300 bg-emerald-50'}`}>
+                <div className="flex items-center gap-4">
+                  <div className="w-12 h-12 rounded-2xl flex items-center justify-center text-2xl" style={{ background: 'rgba(16,185,129,0.15)' }}>✅</div>
+                  <div>
+                    <p className={`font-bold text-lg ${text}`}>Ya declaraste el IVA de este período</p>
+                    <p className={`text-sm ${textSub}`}>Tu próxima declaración es el {formatearFecha(proximaMostrada)}</p>
+                  </div>
                 </div>
-                <div className={`text-center rounded-2xl px-7 py-5 ${urgente ? 'animate-pulse' : ''}`}
-                  style={{ background: 'rgba(255,255,255,0.18)', backdropFilter: 'blur(8px)' }}>
-                  <p className="text-white text-5xl font-black leading-none">{dias}</p>
-                  <p className="text-white/85 text-xs font-semibold mt-1">{dias === 1 ? 'día restante' : 'días restantes'}</p>
+                <a href="/dashboard/sri" className="text-xs font-semibold shrink-0" style={{ color: '#E91E8C' }}>Ver detalle →</a>
+              </div>
+            ) : (
+              <div className="rounded-3xl p-7 relative overflow-hidden"
+                style={{ background: 'linear-gradient(135deg, #E91E8C, #9C27B0)', boxShadow: '0 20px 60px rgba(233,30,140,0.25)' }}>
+                <div className="absolute top-0 right-0 w-72 h-72 rounded-full opacity-20 -mr-20 -mt-20"
+                  style={{ background: 'radial-gradient(circle, #fff, transparent 70%)' }} />
+                <div className="absolute bottom-0 left-1/3 w-48 h-48 rounded-full opacity-10 -mb-20"
+                  style={{ background: 'radial-gradient(circle, #fff, transparent 70%)' }} />
+                <div className="relative flex items-center justify-between flex-wrap gap-5">
+                  <div>
+                    <p className="text-white/80 text-xs font-bold uppercase tracking-wider mb-1.5">📅 Próxima declaración de IVA</p>
+                    <p className="text-white text-3xl font-black">{formatearFecha(proxima)}</p>
+                    <p className="text-white/70 text-sm mt-1.5">Declaras hasta el día {diaDecl} de cada mes según tu RUC</p>
+                  </div>
+                  <div className={`text-center rounded-2xl px-7 py-5 ${urgente ? 'animate-pulse' : ''}`}
+                    style={{ background: 'rgba(255,255,255,0.18)', backdropFilter: 'blur(8px)' }}>
+                    <p className="text-white text-5xl font-black leading-none">{dias}</p>
+                    <p className="text-white/85 text-xs font-semibold mt-1">{dias === 1 ? 'día restante' : 'días restantes'}</p>
+                  </div>
+                </div>
+                <div className="relative flex items-center justify-between flex-wrap gap-3 mt-5">
+                  <a href="/dashboard/sri" className="text-white/60 text-xs hover:text-white/90 transition-colors">Ver detalle de IVA y facturas →</a>
+                  <button onClick={() => confirmarDeclaracion(proxima)}
+                    className="text-xs px-4 py-2 rounded-xl font-bold text-white transition-all hover:scale-105"
+                    style={{ background: 'rgba(255,255,255,0.2)', border: '1px solid rgba(255,255,255,0.4)' }}>
+                    ✓ Ya declaré
+                  </button>
                 </div>
               </div>
-              <p className="relative text-white/60 text-xs mt-4 group-hover:text-white/90 transition-colors">Ver detalle de IVA y facturas →</p>
-            </a>
+            )
           ) : (
             <a href="/dashboard/xmls"
               className={`block rounded-3xl border-2 border-dashed p-7 transition-all hover:border-pink-500 hover:scale-[1.01] ${dark ? 'border-gray-700 bg-gray-900/70' : 'border-gray-300 bg-white'}`}>
@@ -522,6 +605,19 @@ export default function Dashboard() {
           ))}
         </div>
 
+        {/* FILTRO DE MES ACTIVO */}
+        {mesSeleccionado && (
+          <div className="flex items-center gap-3 flex-wrap" style={fadeIn(5)}>
+            <span className="text-xs px-4 py-2 rounded-full font-bold text-white" style={{ background: 'linear-gradient(135deg,#E91E8C,#9C27B0)' }}>
+              📅 Mostrando {labelMes(mesSeleccionado)}
+            </span>
+            <button onClick={() => setMesSeleccionado(null)}
+              className={`text-xs px-4 py-2 rounded-full border font-semibold transition-colors ${dark ? 'border-gray-700 text-gray-300 hover:bg-gray-800' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
+              ✕ Ver todo el historial
+            </button>
+          </div>
+        )}
+
         {/* MÉTRICAS PRINCIPALES */}
         <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4" style={fadeIn(5)}>
           {[
@@ -530,7 +626,7 @@ export default function Dashboard() {
             { label: esEmpresa ? 'Utilidad' : 'Ahorro', valor: utilidad, color: utilidad >= 0 ? '#10B981' : '#EF4444', prefix: '$', emoji: '📊' },
             { label: ivaSaldo >= 0 ? 'IVA a pagar' : 'IVA a favor', valor: Math.abs(ivaSaldo), color: ivaSaldo >= 0 ? '#E91E8C' : '#10B981', prefix: '$', emoji: '🏛️', href: '/dashboard/sri' },
             { label: 'Deducibles', valor: totalDeducibles, color: '#9C27B0', prefix: '$', emoji: '🧾', href: '/dashboard/deducibles' },
-            { label: 'Movimientos', valor: movimientos.length, color: '#3B82F6', prefix: '', noDecimal: true, emoji: '🔢' },
+            { label: 'Movimientos', valor: movimientosFiltrados.length, color: '#3B82F6', prefix: '', noDecimal: true, emoji: '🔢' },
           ].map((m, i) => {
             const contenido = (
               <>
@@ -597,7 +693,7 @@ export default function Dashboard() {
         </div>
 
         {/* RATIOS RÁPIDOS — solo empresa */}
-        {esEmpresa && movimientos.length > 0 && (
+        {esEmpresa && movimientosFiltrados.length > 0 && (
           <div className={`rounded-3xl border p-7 ${card}`} style={fadeIn(6)}>
             <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
               <div>
@@ -635,8 +731,122 @@ export default function Dashboard() {
           </div>
         )}
 
+        {/* INGRESOS Y GASTOS POR MES */}
+        {mesesOrdenados.length > 0 && (
+          <div className={`rounded-3xl border p-7 relative overflow-hidden ${card}`} style={fadeIn(7)}>
+            <div className="absolute top-0 right-0 w-64 h-64 rounded-full opacity-[0.06] pointer-events-none"
+              style={{ background: 'radial-gradient(circle, #E91E8C, transparent 70%)' }} />
+            <div className="flex items-center justify-between mb-6 flex-wrap gap-3 relative">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl flex items-center justify-center text-base" style={{ background: 'linear-gradient(135deg, rgba(233,30,140,0.18), rgba(156,39,176,0.18))' }}>📅</div>
+                <div>
+                  <h2 className={`font-bold text-sm ${text}`}>Ingresos y gastos por mes</h2>
+                  <p className={`text-xs ${textSub}`}>Comparación histórica, últimos {mesesOrdenados.length} {mesesOrdenados.length === 1 ? 'mes' : 'meses'} · clic en una barra para ver el detalle · clic en el mes para filtrar el dashboard</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-4 text-xs">
+                <a href="/dashboard/banco?tipo=ingreso" className={`flex items-center gap-1.5 hover:text-emerald-400 transition-colors ${textSub}`}>
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.6)]" />Ingresos
+                </a>
+                <a href="/dashboard/banco?tipo=gasto" className={`flex items-center gap-1.5 hover:text-red-400 transition-colors ${textSub}`}>
+                  <span className="w-2.5 h-2.5 rounded-full bg-red-400 shadow-[0_0_8px_rgba(248,113,113,0.6)]" />Gastos
+                </a>
+              </div>
+            </div>
+
+            {/* VARIACIÓN VS MES ANTERIOR */}
+            {(variacionIngreso !== null || variacionGasto !== null) && (
+              <div className="flex flex-wrap gap-3 mb-6 relative">
+                {variacionIngreso !== null && (
+                  <div className={`flex items-center gap-2 px-3.5 py-2 rounded-xl border ${variacionIngreso >= 0 ? 'border-emerald-500/30 bg-emerald-500/10' : 'border-red-500/30 bg-red-500/10'}`}>
+                    <span className="text-sm">{variacionIngreso >= 0 ? '📈' : '📉'}</span>
+                    <span className={`text-xs font-bold ${variacionIngreso >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                      {variacionIngreso >= 0 ? '+' : ''}{variacionIngreso.toFixed(0)}%
+                    </span>
+                    <span className={`text-xs ${textSub}`}>ingresos vs. {labelMes(mesAnteriorKey)}</span>
+                  </div>
+                )}
+                {variacionGasto !== null && (
+                  <div className={`flex items-center gap-2 px-3.5 py-2 rounded-xl border ${variacionGasto <= 0 ? 'border-emerald-500/30 bg-emerald-500/10' : 'border-red-500/30 bg-red-500/10'}`}>
+                    <span className="text-sm">{variacionGasto <= 0 ? '📉' : '📈'}</span>
+                    <span className={`text-xs font-bold ${variacionGasto <= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                      {variacionGasto >= 0 ? '+' : ''}{variacionGasto.toFixed(0)}%
+                    </span>
+                    <span className={`text-xs ${textSub}`}>gastos vs. {labelMes(mesAnteriorKey)}</span>
+                  </div>
+                )}
+                <div className={`flex items-center gap-2 px-3.5 py-2 rounded-xl border border-dashed ${dark ? 'border-gray-700' : 'border-gray-300'}`}>
+                  <span className="text-sm">🔮</span>
+                  <span className={`text-xs ${textSub}`}>Proyección {mesSiguienteLabel}:</span>
+                  <span className="text-xs font-bold text-emerald-400">${proyeccionIngreso.toFixed(0)}</span>
+                  <span className={`text-xs ${textSub}`}>/</span>
+                  <span className="text-xs font-bold text-red-400">${proyeccionGasto.toFixed(0)}</span>
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-end gap-3 sm:gap-5 h-52 overflow-x-auto pb-1 relative">
+              {mesesOrdenados.map((mes, i) => {
+                const { ingreso, gasto } = porMes[mes]
+                return (
+                  <div key={mes} className="flex flex-col items-center gap-2 shrink-0" style={{ width: '52px' }}>
+                    <div className="flex items-end gap-1.5 h-40 w-full justify-center">
+                      <a href="/dashboard/banco?tipo=ingreso" className="group relative w-4 sm:w-5 flex items-end justify-center h-full">
+                        <span className={`absolute -top-5 text-[9px] font-bold opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap ${dark ? 'text-emerald-300' : 'text-emerald-600'}`}>${ingreso.toFixed(0)}</span>
+                        <div className="w-full rounded-t-lg transition-all duration-200 group-hover:brightness-110 group-hover:scale-x-110 origin-bottom"
+                          title={`Ingresos ${labelMes(mes)}: $${ingreso.toFixed(2)}`}
+                          style={{
+                            height: entrada ? `${Math.max((ingreso / maxValorMes) * 100, ingreso > 0 ? 3 : 0)}%` : '0%',
+                            background: 'linear-gradient(180deg, #34D399, #059669)',
+                            boxShadow: '0 2px 10px rgba(16,185,129,0.35)',
+                            transition: `height 0.8s cubic-bezier(0.22,1,0.36,1) ${0.4 + i * 0.05}s`
+                          }} />
+                      </a>
+                      <a href="/dashboard/banco?tipo=gasto" className="group relative w-4 sm:w-5 flex items-end justify-center h-full">
+                        <span className={`absolute -top-5 text-[9px] font-bold opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap ${dark ? 'text-red-300' : 'text-red-600'}`}>${gasto.toFixed(0)}</span>
+                        <div className="w-full rounded-t-lg transition-all duration-200 group-hover:brightness-110 group-hover:scale-x-110 origin-bottom"
+                          title={`Gastos ${labelMes(mes)}: $${gasto.toFixed(2)}`}
+                          style={{
+                            height: entrada ? `${Math.max((gasto / maxValorMes) * 100, gasto > 0 ? 3 : 0)}%` : '0%',
+                            background: 'linear-gradient(180deg, #F87171, #DC2626)',
+                            boxShadow: '0 2px 10px rgba(239,68,68,0.35)',
+                            transition: `height 0.8s cubic-bezier(0.22,1,0.36,1) ${0.4 + i * 0.05}s`
+                          }} />
+                      </a>
+                    </div>
+                    <button onClick={() => setMesSeleccionado(mesSeleccionado === mes ? null : mes)}
+                      className={`text-[10px] font-semibold transition-colors ${mesSeleccionado === mes ? 'underline decoration-2 underline-offset-4' : 'hover:underline'}`}
+                      style={{ color: mesSeleccionado === mes ? '#E91E8C' : (dark ? '#9CA3AF' : '#6B7280') }}>
+                      {labelMes(mes)}
+                    </button>
+                  </div>
+                )
+              })}
+
+              {/* MES PROYECTADO */}
+              <div className="flex flex-col items-center gap-2 shrink-0" style={{ width: '52px' }}>
+                <div className="flex items-end gap-1.5 h-40 w-full justify-center">
+                  <div className="relative w-4 sm:w-5 flex items-end justify-center h-full">
+                    <span className={`absolute -top-5 text-[9px] font-bold whitespace-nowrap ${dark ? 'text-emerald-300' : 'text-emerald-600'}`}>${proyeccionIngreso.toFixed(0)}</span>
+                    <div className="w-full rounded-t-lg border-2 border-dashed border-emerald-400/70 opacity-50"
+                      title={`Proyección ingresos ${mesSiguienteLabel}: $${proyeccionIngreso.toFixed(2)}`}
+                      style={{ height: entrada ? `${Math.max((proyeccionIngreso / maxValorMes) * 100, proyeccionIngreso > 0 ? 3 : 0)}%` : '0%', transition: 'height 0.8s cubic-bezier(0.22,1,0.36,1) 0.6s' }} />
+                  </div>
+                  <div className="relative w-4 sm:w-5 flex items-end justify-center h-full">
+                    <span className={`absolute -top-5 text-[9px] font-bold whitespace-nowrap ${dark ? 'text-red-300' : 'text-red-600'}`}>${proyeccionGasto.toFixed(0)}</span>
+                    <div className="w-full rounded-t-lg border-2 border-dashed border-red-400/70 opacity-50"
+                      title={`Proyección gastos ${mesSiguienteLabel}: $${proyeccionGasto.toFixed(2)}`}
+                      style={{ height: entrada ? `${Math.max((proyeccionGasto / maxValorMes) * 100, proyeccionGasto > 0 ? 3 : 0)}%` : '0%', transition: 'height 0.8s cubic-bezier(0.22,1,0.36,1) 0.6s' }} />
+                  </div>
+                </div>
+                <span className={`text-[10px] font-semibold ${textSub}`}>🔮 {mesSiguienteLabel}</span>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* GRÁFICOS DE TRANSACCIONES */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6" style={fadeIn(7)}>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6" style={fadeIn(8)}>
 
           {/* Gastos por categoría */}
           <div className={`rounded-3xl border p-7 ${card}`}>
@@ -645,7 +855,7 @@ export default function Dashboard() {
                 <div className="w-9 h-9 rounded-xl flex items-center justify-center text-base" style={{ background: 'rgba(239,68,68,0.12)' }}>💸</div>
                 <h2 className={`font-bold text-sm ${text}`}>Gastos por categoría</h2>
               </div>
-              <a href="/dashboard/banco"
+              <a href="/dashboard/banco?tipo=gasto"
                 className="text-xs px-3.5 py-2 rounded-xl font-bold transition-all hover:scale-105"
                 style={{ background: 'rgba(233,30,140,0.1)', border: '1px solid rgba(233,30,140,0.3)', color: '#E91E8C' }}>
                 Ver todos →
@@ -689,7 +899,7 @@ export default function Dashboard() {
                 <div className="w-9 h-9 rounded-xl flex items-center justify-center text-base" style={{ background: 'rgba(16,185,129,0.12)' }}>💰</div>
                 <h2 className={`font-bold text-sm ${text}`}>Ingresos por categoría</h2>
               </div>
-              <a href="/dashboard/banco"
+              <a href="/dashboard/banco?tipo=ingreso"
                 className="text-xs px-3.5 py-2 rounded-xl font-bold transition-all hover:scale-105"
                 style={{ background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.3)', color: '#10B981' }}>
                 Ver todos →
@@ -728,11 +938,11 @@ export default function Dashboard() {
         </div>
 
         {/* ÚLTIMOS MOVIMIENTOS */}
-        <div className={`rounded-3xl border overflow-hidden ${card}`} style={fadeIn(8)}>
+        <div className={`rounded-3xl border overflow-hidden ${card}`} style={fadeIn(9)}>
           <div className={`px-7 py-5 flex items-center justify-between border-b ${border}`}>
             <div className="flex items-center gap-3">
               <div className="w-9 h-9 rounded-xl flex items-center justify-center text-base" style={{ background: 'rgba(59,130,246,0.12)' }}>🕐</div>
-              <h2 className={`font-bold text-sm ${text}`}>Últimos movimientos</h2>
+              <h2 className={`font-bold text-sm ${text}`}>{mesSeleccionado ? `Movimientos de ${labelMes(mesSeleccionado)}` : 'Últimos movimientos'}</h2>
             </div>
             <a href="/dashboard/banco"
               className="text-xs px-5 py-2 rounded-xl font-bold transition-all hover:scale-105 text-white"
@@ -740,10 +950,10 @@ export default function Dashboard() {
               Ver todos →
             </a>
           </div>
-          {movimientos.length === 0 ? (
+          {movimientosFiltrados.length === 0 ? (
             <div className={`text-sm text-center py-12 ${textSub}`}>
               <p className="text-3xl mb-2">📭</p>
-              Sin movimientos. Sube un extracto bancario o XML del SRI para empezar.
+              {mesSeleccionado ? `Sin movimientos en ${labelMes(mesSeleccionado)}.` : 'Sin movimientos. Sube un extracto bancario o XML del SRI para empezar.'}
             </div>
           ) : (
             <table className="w-full text-sm">
@@ -755,7 +965,7 @@ export default function Dashboard() {
                 </tr>
               </thead>
               <tbody>
-                {movimientos.slice(0, 8).map((m, i) => {
+                {movimientosFiltrados.slice(0, 8).map((m, i) => {
                   const info = categoriaInfo[m.categoria] || { label: m.categoria, emoji: '📦' }
                   return (
                     <tr key={i} className={`border-t ${border} transition-colors ${dark ? 'hover:bg-gray-800/60' : 'hover:bg-gray-50'}`}>
@@ -784,7 +994,7 @@ export default function Dashboard() {
 
         {/* CUENTAS */}
         {Object.keys(cuentas).length > 0 && (
-          <div className={`rounded-3xl border overflow-hidden ${card}`} style={fadeIn(9)}>
+          <div className={`rounded-3xl border overflow-hidden ${card}`} style={fadeIn(10)}>
             <div className={`px-7 py-5 border-b ${border} flex items-center gap-3`}>
               <div className="w-9 h-9 rounded-xl flex items-center justify-center text-base" style={{ background: 'rgba(156,39,176,0.12)' }}>🏦</div>
               <h2 className={`font-bold text-sm ${text}`}>Resumen por cuenta</h2>
@@ -814,7 +1024,7 @@ export default function Dashboard() {
         )}
 
         {/* Pie amigable */}
-        <p className={`text-center text-xs pb-4 ${dark ? 'text-gray-700' : 'text-gray-400'}`} style={fadeIn(10)}>
+        <p className={`text-center text-xs pb-4 ${dark ? 'text-gray-700' : 'text-gray-400'}`} style={fadeIn(11)}>
           Numia trabaja por ti 24/7 · Tus datos están seguros 🔒
         </p>
 
