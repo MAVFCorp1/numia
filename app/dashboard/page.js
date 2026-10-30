@@ -288,6 +288,7 @@ export default function Dashboard() {
     { href: '/dashboard/sri', emoji: '🏛️', label: 'SRI e IVA', desc: 'Impuestos', color: '#3B82F6' },
     { href: '/dashboard/deducibles', emoji: '🧾', label: 'Deducibles', desc: esEmpresa ? 'Gastos empresa' : 'Ahorro fiscal', color: '#10B981' },
     { href: '/dashboard/patrimonio', emoji: '💎', label: 'Patrimonio', desc: 'Activos y pasivos', color: '#9C27B0' },
+    { href: '/dashboard/inversiones', emoji: '📈', label: 'Inversiones', desc: 'Perfil y cartera ETF', color: '#06B6D4' },
     ...(esEmpresa ? [{ href: '/dashboard/ratios', emoji: '📊', label: 'Ratios', desc: 'Análisis', color: '#F59E0B' }] : []),
   ]
 
