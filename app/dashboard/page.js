@@ -59,6 +59,21 @@ function saludoPorHora() {
   return { texto: 'Buenas noches', emoji: '🌙' }
 }
 
+// Monto con separador de miles (estilo premium: $1,234.56 en vez de $1234.56)
+function fmtMoney(v) {
+  return Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+// Iniciales para el avatar del usuario, a partir de su nombre (o correo, vía nombreLimpio)
+function iniciales(nombre) {
+  const limpio = nombreLimpio(nombre)
+  if (!limpio) return '🙂'
+  const partes = limpio.trim().split(/\s+/)
+  return partes.length > 1 ? (partes[0][0] + partes[1][0]).toUpperCase() : limpio.slice(0, 2).toUpperCase()
+}
+
+const PLAN_LABELS = { gratis: 'Gratis', pro: 'Pro', contador: 'Con Contador' }
+
 export default function Dashboard() {
   const [user, setUser] = useState(null)
   const [perfil, setPerfil] = useState(null)
@@ -302,15 +317,13 @@ export default function Dashboard() {
   return (
     <div className={`min-h-screen ${bg} transition-colors duration-300 relative`}>
 
-      {/* Glow ambiental de fondo (solo dark) */}
-      {dark && (
-        <div className="fixed inset-0 pointer-events-none overflow-hidden">
-          <div className="absolute -top-40 left-1/4 w-[700px] h-[500px] rounded-full opacity-[0.07]"
-            style={{ background: 'radial-gradient(ellipse, #E91E8C, transparent 60%)', filter: 'blur(60px)' }} />
-          <div className="absolute top-1/2 -right-40 w-[500px] h-[500px] rounded-full opacity-[0.05]"
-            style={{ background: 'radial-gradient(circle, #9C27B0, transparent 60%)', filter: 'blur(60px)' }} />
-        </div>
-      )}
+      {/* Glow ambiental de fondo (versión suave para cada tema) */}
+      <div className="fixed inset-0 pointer-events-none overflow-hidden">
+        <div className="absolute -top-40 left-1/4 w-[700px] h-[500px] rounded-full"
+          style={{ background: 'radial-gradient(ellipse, #E91E8C, transparent 60%)', filter: 'blur(60px)', opacity: dark ? 0.07 : 0.09 }} />
+        <div className="absolute top-1/2 -right-40 w-[500px] h-[500px] rounded-full"
+          style={{ background: 'radial-gradient(circle, #9C27B0, transparent 60%)', filter: 'blur(60px)', opacity: dark ? 0.05 : 0.07 }} />
+      </div>
 
       {/* NAVBAR */}
       <header className={`sticky top-0 z-50 border-b ${dark ? 'bg-gray-950/80 border-gray-800' : 'bg-white/90 border-gray-200'}`}
@@ -324,6 +337,21 @@ export default function Dashboard() {
             </span>
           </div>
           <div className="flex items-center gap-2 relative">
+            {/* Chip de usuario: avatar + nombre + plan */}
+            <div className={`hidden sm:flex items-center gap-2 pl-1 pr-3 py-1 rounded-full border mr-1 ${dark ? 'border-gray-700 bg-gray-800/50' : 'border-gray-200 bg-gray-50'}`}>
+              <div className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-black text-white shrink-0"
+                style={{ background: 'linear-gradient(135deg, #E91E8C, #9C27B0)' }}>
+                {iniciales(perfil?.nombre)}
+              </div>
+              <span className={`text-xs font-semibold max-w-[110px] truncate ${text}`}>{nombreLimpio(perfil?.nombre) || 'Tu cuenta'}</span>
+              {perfil?.plan && (
+                <span className="text-[9px] font-black uppercase tracking-wide px-1.5 py-0.5 rounded-full shrink-0"
+                  style={{ background: 'rgba(233,30,140,0.15)', color: '#E91E8C' }}>
+                  {PLAN_LABELS[perfil.plan] || perfil.plan}
+                </span>
+              )}
+            </div>
+
             {/* Campanita de alertas */}
             <button onClick={() => setPanelAbierto(!panelAbierto)}
               className={`relative p-2 rounded-xl border transition-all hover:scale-105 ${dark ? 'border-gray-700 text-gray-300 hover:bg-gray-800' : 'border-gray-200 text-gray-600 hover:bg-gray-100'}`}>
@@ -406,11 +434,19 @@ export default function Dashboard() {
       <div className="max-w-7xl mx-auto px-6 py-8 space-y-7 relative">
 
         {/* SALUDO */}
-        <div style={fadeIn(0)}>
-          <h1 className={`text-3xl font-black ${text}`}>
-            {saludo.texto}, {nombreLimpio(perfil?.nombre) || 'bienvenido'} {saludo.emoji}
-          </h1>
-          <p className={`text-sm mt-1 ${textSub}`}>Así van tus finanzas hoy</p>
+        <div className={`rounded-3xl border p-6 sm:p-7 flex items-center gap-5 relative overflow-hidden ${card}`} style={fadeIn(0)}>
+          <div className="absolute top-0 right-0 w-56 h-56 rounded-full opacity-[0.08] -mr-16 -mt-16 pointer-events-none"
+            style={{ background: 'radial-gradient(circle, #E91E8C, transparent 70%)' }} />
+          <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl flex items-center justify-center text-xl sm:text-2xl font-black text-white shrink-0 relative"
+            style={{ background: 'linear-gradient(135deg, #E91E8C, #9C27B0)', boxShadow: '0 8px 24px rgba(233,30,140,0.35)' }}>
+            {iniciales(perfil?.nombre)}
+          </div>
+          <div className="relative min-w-0">
+            <h1 className={`text-2xl sm:text-3xl font-black truncate ${text}`}>
+              {saludo.texto}, {nombreLimpio(perfil?.nombre) || 'bienvenido'} {saludo.emoji}
+            </h1>
+            <p className={`text-sm mt-1 ${textSub}`}>Así van tus finanzas hoy</p>
+          </div>
         </div>
 
         {/* PATRIMONIO NETO */}
@@ -435,18 +471,18 @@ export default function Dashboard() {
               <div className="flex items-center justify-between flex-wrap gap-4">
                 <div>
                   <p className={`text-xs font-semibold mb-1 ${textSub}`}>💎 Patrimonio Neto</p>
-                  <p className="text-3xl font-black" style={{ color: patrimonioNeto >= 0 ? '#10B981' : '#EF4444' }}>
-                    {patrimonioNeto < 0 ? '-' : ''}${Math.abs(patrimonioNeto).toFixed(2)}
+                  <p className="text-3xl font-black tabular-nums" style={{ color: patrimonioNeto >= 0 ? '#10B981' : '#EF4444' }}>
+                    {patrimonioNeto < 0 ? '-' : ''}${fmtMoney(patrimonioNeto)}
                   </p>
                 </div>
                 <div className="flex gap-6">
                   <div>
                     <p className={`text-xs ${textSub}`}>Activos</p>
-                    <p className="text-sm font-bold text-emerald-400">${totalActivos.toFixed(2)}</p>
+                    <p className="text-sm font-bold text-emerald-400 tabular-nums">${fmtMoney(totalActivos)}</p>
                   </div>
                   <div>
                     <p className={`text-xs ${textSub}`}>Pasivos</p>
-                    <p className="text-sm font-bold text-red-400">${totalPasivos.toFixed(2)}</p>
+                    <p className="text-sm font-bold text-red-400 tabular-nums">${fmtMoney(totalPasivos)}</p>
                   </div>
                 </div>
                 <p className={`text-xs font-semibold`} style={{ color: '#E91E8C' }}>Ver detalle →</p>
@@ -592,11 +628,12 @@ export default function Dashboard() {
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3" style={fadeIn(4)}>
           {accesos.map(a => (
             <a key={a.href} href={a.href}
-              className={`rounded-2xl border p-4 transition-all hover:scale-[1.04] group ${card}`}
-              style={{ transition: 'all 0.25s ease' }}
-              onMouseEnter={e => e.currentTarget.style.borderColor = a.color}
-              onMouseLeave={e => e.currentTarget.style.borderColor = ''}>
-              <div className="w-11 h-11 rounded-xl flex items-center justify-center text-xl mb-3 transition-transform group-hover:scale-110"
+              className={`relative rounded-2xl border p-4 transition-all hover:-translate-y-1 group overflow-hidden ${card}`}
+              style={{ transition: 'all 0.3s cubic-bezier(0.22,1,0.36,1)' }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = a.color; e.currentTarget.style.boxShadow = `0 14px 28px ${a.color}26` }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = ''; e.currentTarget.style.boxShadow = '' }}>
+              <span className="absolute right-3 top-4 text-xs opacity-0 -translate-x-1 group-hover:opacity-100 group-hover:translate-x-0 transition-all duration-300" style={{ color: a.color }}>→</span>
+              <div className="w-11 h-11 rounded-xl flex items-center justify-center text-xl mb-3 transition-transform duration-300 group-hover:scale-110"
                 style={{ background: `${a.color}1c`, border: `1px solid ${a.color}45` }}>
                 {a.emoji}
               </div>
@@ -636,14 +673,15 @@ export default function Dashboard() {
                   <span className="w-7 h-7 rounded-lg flex items-center justify-center text-sm"
                     style={{ background: `${m.color}18` }}>{m.emoji}</span>
                 </div>
-                <div className="text-xl font-black" style={{ color: m.color }}>
-                  {m.prefix}{m.noDecimal ? m.valor : m.valor.toFixed(2)}
+                <div className="text-xl font-black tabular-nums" style={{ color: m.color }}>
+                  {m.prefix}{m.noDecimal ? m.valor : fmtMoney(m.valor)}
                 </div>
               </>
             )
             return m.href ? (
               <a key={i} href={m.href}
-                className={`rounded-2xl border p-4 transition-all hover:scale-[1.03] hover:border-pink-500/40 ${card}`}>
+                className={`rounded-2xl border p-4 transition-all hover:-translate-y-0.5 hover:border-pink-500/40 hover:shadow-lg ${card}`}
+                style={{ transition: 'all 0.25s ease' }}>
                 {contenido}
               </a>
             ) : (
@@ -883,8 +921,8 @@ export default function Dashboard() {
                             transition: `width 0.9s cubic-bezier(0.22,1,0.36,1) ${0.5 + i * 0.08}s`
                           }} />
                       </div>
-                      <div className={`text-xs font-bold w-20 text-right`} style={{ color: info.color || '#EF4444' }}>
-                        ${val.toFixed(2)}
+                      <div className={`text-xs font-bold w-20 text-right tabular-nums`} style={{ color: info.color || '#EF4444' }}>
+                        ${fmtMoney(val)}
                       </div>
                     </div>
                   )
@@ -927,8 +965,8 @@ export default function Dashboard() {
                             transition: `width 0.9s cubic-bezier(0.22,1,0.36,1) ${0.5 + i * 0.08}s`
                           }} />
                       </div>
-                      <div className="text-xs font-bold w-20 text-right text-emerald-500">
-                        ${val.toFixed(2)}
+                      <div className="text-xs font-bold w-20 text-right text-emerald-500 tabular-nums">
+                        ${fmtMoney(val)}
                       </div>
                     </div>
                   )
@@ -982,8 +1020,8 @@ export default function Dashboard() {
                           {m.tipo}
                         </span>
                       </td>
-                      <td className={`px-6 py-3.5 text-right text-xs font-black ${m.tipo === 'ingreso' ? 'text-emerald-400' : 'text-red-400'}`}>
-                        {m.tipo === 'ingreso' ? '+' : '-'}${parseFloat(m.monto).toFixed(2)}
+                      <td className={`px-6 py-3.5 text-right text-xs font-black tabular-nums ${m.tipo === 'ingreso' ? 'text-emerald-400' : 'text-red-400'}`}>
+                        {m.tipo === 'ingreso' ? '+' : '-'}${fmtMoney(parseFloat(m.monto))}
                       </td>
                     </tr>
                   )
@@ -1012,10 +1050,10 @@ export default function Dashboard() {
                 {Object.entries(cuentas).map(([cuenta, vals]) => (
                   <tr key={cuenta} className={`border-t ${border} ${dark ? 'hover:bg-gray-800/60' : 'hover:bg-gray-50'} transition-colors`}>
                     <td className={`px-6 py-3.5 text-xs font-bold ${text} capitalize`}>{cuenta.replace(/-/g, ' ')}</td>
-                    <td className="px-6 py-3.5 text-xs font-semibold text-emerald-400">+${vals.ing.toFixed(2)}</td>
-                    <td className="px-6 py-3.5 text-xs font-semibold text-red-400">-${vals.gas.toFixed(2)}</td>
-                    <td className={`px-6 py-3.5 text-xs font-black ${vals.ing - vals.gas >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                      ${(vals.ing - vals.gas).toFixed(2)}
+                    <td className="px-6 py-3.5 text-xs font-semibold text-emerald-400 tabular-nums">+${fmtMoney(vals.ing)}</td>
+                    <td className="px-6 py-3.5 text-xs font-semibold text-red-400 tabular-nums">-${fmtMoney(vals.gas)}</td>
+                    <td className={`px-6 py-3.5 text-xs font-black tabular-nums ${vals.ing - vals.gas >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                      ${fmtMoney(vals.ing - vals.gas)}
                     </td>
                   </tr>
                 ))}
