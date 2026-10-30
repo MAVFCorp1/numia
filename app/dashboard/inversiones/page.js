@@ -132,6 +132,12 @@ export default function InversionesPage() {
   const [aporteMensual, setAporteMensual] = useState('')
   const [respuestas, setRespuestas] = useState({})
 
+  // Ajuste manual de la cartera sugerida (porcentajes por ETF) antes de aceptarla
+  const [ajustando, setAjustando] = useState(false)
+  const [carteraEditable, setCarteraEditable] = useState([])
+  const [guardandoCartera, setGuardandoCartera] = useState(false)
+  const [errorCartera, setErrorCartera] = useState('')
+
   const supabase = createClient()
 
   useEffect(() => { inicializar() }, [])
@@ -208,6 +214,40 @@ export default function InversionesPage() {
     setEditando(false)
   }
 
+  // Arranca el modo de ajuste con la cartera actual (la aceptada antes, o la sugerida si aún no hay ninguna)
+  function iniciarAjuste() {
+    const base = (perfilInversion?.cartera?.length ? perfilInversion.cartera : carterasModelo[perfilInversion.perfil])
+    setCarteraEditable(base.map(c => ({ ...c })))
+    setErrorCartera('')
+    setAjustando(true)
+  }
+
+  function restablecerSugerida() {
+    setCarteraEditable(carterasModelo[perfilInversion.perfil].map(c => ({ ...c })))
+  }
+
+  function cambiarPeso(ticker, valorPorcentaje) {
+    const frac = Math.max(0, Math.min(100, parseFloat(valorPorcentaje) || 0)) / 100
+    setCarteraEditable(arr => arr.map(c => c.ticker === ticker ? { ...c, peso: frac } : c))
+  }
+
+  async function aceptarCartera() {
+    const suma = carteraEditable.reduce((s, c) => s + c.peso, 0)
+    if (Math.abs(suma - 1) > 0.01) {
+      setErrorCartera('Los porcentajes deben sumar 100% entre todos los ETFs.')
+      return
+    }
+    setErrorCartera('')
+    setGuardandoCartera(true)
+    const { data, error: err } = await supabase.from('perfil_inversion')
+      .update({ cartera: carteraEditable, estado: 'aceptada', updated_at: new Date().toISOString() })
+      .eq('user_id', user.id).select().single()
+    setGuardandoCartera(false)
+    if (err) { setErrorCartera('No se pudo guardar tu cartera. Intenta de nuevo.'); return }
+    setPerfilInversion(data)
+    setAjustando(false)
+  }
+
   const dark = darkMode
   const bg = dark ? 'bg-gray-950' : 'bg-gray-100'
   const card = dark ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'
@@ -232,7 +272,7 @@ export default function InversionesPage() {
   let info, cartera, serieProyeccion, ultimo, ganancia
   if (perfilInversion && !editando) {
     info = perfilRiesgoInfo[perfilInversion.perfil]
-    cartera = carterasModelo[perfilInversion.perfil]
+    cartera = perfilInversion.cartera?.length ? perfilInversion.cartera : carterasModelo[perfilInversion.perfil]
     const anios = horizonteAnios[perfilInversion.horizonte] || 5
     serieProyeccion = proyectarCrecimiento({
       capitalInicial: perfilInversion.capital_inicial,
@@ -379,9 +419,77 @@ export default function InversionesPage() {
 
             {/* CARTERA SUGERIDA */}
             <div className={`rounded-2xl border p-6 ${card}`}>
-              <h2 className={`font-bold text-sm mb-1 ${text}`}>🧺 Tu cartera de ETFs sugerida</h2>
-              <p className={`text-xs mb-5 ${textSub}`}>Selección ilustrativa de ETFs ampliamente diversificados para tu perfil. No es asesoría financiera personalizada.</p>
-              <CarteraDonut cartera={cartera} dark={dark} />
+              <div className="flex items-start justify-between flex-wrap gap-3 mb-1">
+                <h2 className={`font-bold text-sm ${text}`}>🧺 Tu cartera de ETFs</h2>
+                {perfilInversion.estado === 'aceptada' && !ajustando && (
+                  <span className="text-[11px] font-semibold px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">✅ Aceptada</span>
+                )}
+              </div>
+              <p className={`text-xs mb-5 ${textSub}`}>
+                {ajustando
+                  ? 'Ajusta el % de cada ETF — deben sumar 100% entre todos.'
+                  : 'Selección ilustrativa de ETFs ampliamente diversificados para tu perfil. No es asesoría financiera personalizada.'}
+              </p>
+
+              {errorCartera && (
+                <div className="bg-red-500/10 border border-red-500/30 text-red-400 text-xs p-2.5 rounded-lg mb-4">{errorCartera}</div>
+              )}
+
+              {ajustando ? (
+                <div className="flex items-start gap-8 flex-wrap">
+                  <CarteraDonut cartera={carteraEditable} dark={dark} />
+                  <div className="space-y-2 flex-1 min-w-[220px]">
+                    {carteraEditable.map(({ ticker, peso }) => {
+                      const etf = etfInfo[ticker] || { nombre: ticker, tipo: '', color: '#9CA3AF' }
+                      return (
+                        <div key={ticker} className="flex items-center gap-2 text-xs">
+                          <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: etf.color }} />
+                          <span className={`font-bold w-11 shrink-0 ${text}`}>{ticker}</span>
+                          <span className={`flex-1 truncate ${textSub}`}>{etf.tipo}</span>
+                          <div className="relative w-[70px] shrink-0">
+                            <input type="number" min="0" max="100" step="1"
+                              value={Math.round(peso * 100)}
+                              onChange={e => cambiarPeso(ticker, e.target.value)}
+                              className={`w-full pl-2 pr-5 py-1.5 rounded-lg border text-right text-xs ${inputClass}`} />
+                            <span className={`absolute right-2 top-1/2 -translate-y-1/2 text-[10px] pointer-events-none ${textSub}`}>%</span>
+                          </div>
+                        </div>
+                      )
+                    })}
+                    <div className={`text-xs font-bold text-right pt-2 ${Math.abs(carteraEditable.reduce((s, c) => s + c.peso, 0) - 1) > 0.01 ? 'text-red-400' : 'text-emerald-400'}`}>
+                      Total: {(carteraEditable.reduce((s, c) => s + c.peso, 0) * 100).toFixed(0)}%
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <CarteraDonut cartera={cartera} dark={dark} />
+              )}
+
+              <div className="flex gap-3 mt-6">
+                {ajustando ? (
+                  <>
+                    <button onClick={() => setAjustando(false)}
+                      className={`py-2.5 px-4 rounded-xl text-xs font-bold transition-all ${dark ? 'text-gray-300 bg-gray-800 border border-gray-700 hover:bg-gray-700' : 'text-gray-700 bg-gray-100 border border-gray-200 hover:bg-gray-200'}`}>
+                      Cancelar
+                    </button>
+                    <button onClick={restablecerSugerida}
+                      className={`py-2.5 px-4 rounded-xl text-xs font-bold transition-all ${dark ? 'text-gray-300 bg-gray-800 border border-gray-700 hover:bg-gray-700' : 'text-gray-700 bg-gray-100 border border-gray-200 hover:bg-gray-200'}`}>
+                      ↺ Restablecer a la sugerida
+                    </button>
+                    <button onClick={aceptarCartera} disabled={guardandoCartera}
+                      className="flex-1 py-2.5 rounded-xl text-xs font-bold text-white transition-all hover:scale-[1.02] disabled:opacity-60 disabled:hover:scale-100"
+                      style={{ background: 'linear-gradient(135deg, #E91E8C, #9C27B0)', boxShadow: '0 4px 20px rgba(233,30,140,0.3)' }}>
+                      {guardandoCartera ? 'Guardando...' : '✅ Confirmar esta cartera'}
+                    </button>
+                  </>
+                ) : (
+                  <button onClick={iniciarAjuste}
+                    className="py-2.5 px-5 rounded-xl text-xs font-bold text-white transition-all hover:scale-[1.02]"
+                    style={{ background: 'linear-gradient(135deg, #E91E8C, #9C27B0)', boxShadow: '0 4px 20px rgba(233,30,140,0.3)' }}>
+                    {perfilInversion.estado === 'aceptada' ? '✏️ Editar cartera aceptada' : '✏️ Ajustar y confirmar cartera →'}
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* PROYECCIÓN */}
@@ -418,7 +526,11 @@ export default function InversionesPage() {
             <div className={`rounded-2xl border p-6 text-center ${card}`}>
               <p className="text-2xl mb-2">🔒</p>
               <p className={`font-bold text-sm mb-1 ${text}`}>Conectar cuenta de inversión</p>
-              <p className={`text-xs mb-4 ${textSub}`}>Estamos trabajando en conectar Numia con un bróker para que puedas invertir en esta cartera directo desde la app, sin salir de aquí.</p>
+              <p className={`text-xs mb-4 ${textSub}`}>
+                {perfilInversion.estado === 'aceptada'
+                  ? 'Tu cartera ya está confirmada y lista. En cuanto conectemos Numia con un bróker, la compra se ejecutará automáticamente con estos porcentajes y podrás ver el valor de tu inversión aquí mismo.'
+                  : 'Confirma tu cartera arriba. Estamos trabajando en conectar Numia con un bróker para ejecutar la compra automáticamente y que puedas ver el valor de tu inversión directo desde la app.'}
+              </p>
               <button disabled
                 className={`px-6 py-2.5 rounded-xl text-sm font-bold cursor-not-allowed ${dark ? 'bg-gray-800 text-gray-500 border border-gray-700' : 'bg-gray-100 text-gray-400 border border-gray-200'}`}>
                 Próximamente
