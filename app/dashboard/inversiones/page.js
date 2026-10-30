@@ -468,7 +468,7 @@ export default function InversionesPage() {
               <div className="flex gap-3 mt-6">
                 {ajustando ? (
                   <>
-                    <button onClick={() => setAjustando(false)}
+                    <button onClick={() => { setAjustando(false); setErrorCartera('') }}
                       className={`py-2.5 px-4 rounded-xl text-xs font-bold transition-all ${dark ? 'text-gray-300 bg-gray-800 border border-gray-700 hover:bg-gray-700' : 'text-gray-700 bg-gray-100 border border-gray-200 hover:bg-gray-200'}`}>
                       Cancelar
                     </button>
